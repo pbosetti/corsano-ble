@@ -1,7 +1,9 @@
 # corsano-ble
 
-A C++20 library for reading Corsano bracelets over BLE, on macOS (CoreBluetooth) and
-Linux (BlueZ). It is a clean-room reimplementation of what the Android SDK
+[![CI](https://github.com/pbosetti/corsano-ble/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pbosetti/corsano-ble/actions/workflows/ci.yml)
+
+A C++20 library for reading Corsano bracelets over BLE, on macOS (CoreBluetooth),
+Linux (BlueZ) and Windows 10/11 (WinRT). It is a clean-room reimplementation of what the Android SDK
 does at the BLE level. It needs no Corsano SDK and no license key.
 
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) describes the wire protocol.
@@ -14,6 +16,7 @@ does at the BLE level. It needs no Corsano SDK and no license key.
 
 ```sh
 # Linux only: sudo apt install libdbus-1-dev
+# Windows: run from an "x64 Native Tools" prompt (Visual Studio 2022+ with C++)
 cmake -Bbuild -G Ninja
 cmake --build build
 ctest --test-dir build                      # offline tests

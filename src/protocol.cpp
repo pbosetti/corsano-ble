@@ -57,10 +57,11 @@ bool check_crc(std::span<const uint8_t> frame) {
 
 std::vector<uint8_t> encode_request(uint8_t id,
                                     std::span<const uint8_t> payload) {
-  std::vector<uint8_t> out;
-  out.reserve(payload.size() + 1);
-  out.push_back(id);
-  out.insert(out.end(), payload.begin(), payload.end());
+  // Sized up front: reserve + push_back here trips a GCC 15 -O3 false
+  // positive (-Wfree-nonheap-object)
+  std::vector<uint8_t> out(payload.size() + 1);
+  out[0] = id;
+  std::copy(payload.begin(), payload.end(), out.begin() + 1);
   return out;
 }
 

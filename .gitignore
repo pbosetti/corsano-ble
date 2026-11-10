@@ -1,0 +1,6 @@
+/build*/
+/data
+
+.DS_Store
+# personal health data used by corsano-cli profile/calibrate
+corsano-profile.txt

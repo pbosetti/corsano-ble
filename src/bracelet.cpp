@@ -1,10 +1,14 @@
 #include "corsano/bracelet.hpp"
 
 // SimpleBLE's Config.h trips -Wunused-function
+#if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include <simpleble/SimpleBLE.h>
+#if defined(__GNUC__)
 #pragma GCC diagnostic pop
+#endif
 
 #include <algorithm>
 #include <cctype>

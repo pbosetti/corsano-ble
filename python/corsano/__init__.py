@@ -13,7 +13,7 @@ from typing import Callable, NamedTuple, Optional, Union
 
 # MARK: - Library loading
 
-_NAMES = ("libcorsano_c.dylib", "libcorsano_c.so")
+_NAMES = ("libcorsano_c.dylib", "libcorsano_c.so", "corsano_c.dll")
 
 
 def _load() -> C.CDLL:

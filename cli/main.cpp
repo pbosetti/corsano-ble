@@ -9,6 +9,7 @@
 #include <cxxopts.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -574,7 +575,7 @@ int cmd_plan(const cxxopts::ParseResult &args) {
     int hz = args["ppg2-rate"].as<int>();
     if (hz < 32 || hz > 512 || (hz & (hz - 1)))
       throw std::runtime_error("--ppg2-rate must be 32, 64, 128, 256 or 512");
-    rate = Corsano::Ppg2Rate(1 + __builtin_ctz(hz / 32));
+    rate = Corsano::Ppg2Rate(1 + std::countr_zero(unsigned(hz / 32)));
   }
   auto b = connect(args);
   if (set)

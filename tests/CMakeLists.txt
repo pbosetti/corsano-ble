@@ -32,4 +32,9 @@ if(TARGET corsano_c)
   target_link_libraries(corsano_c_tests PRIVATE corsano_c)
   set_target_properties(corsano_c_tests PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON)
   add_test(NAME corsano_c_api COMMAND corsano_c_tests)
+  if(WIN32) # no rpath: put corsano_c.dll next to the test
+    add_custom_command(TARGET corsano_c_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              $<TARGET_FILE:corsano_c> $<TARGET_FILE_DIR:corsano_c_tests>)
+  endif()
 endif()

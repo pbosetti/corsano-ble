@@ -13,6 +13,11 @@ option(CORSANO_BUILD_CLI "Build CLI" ${PROJECT_IS_TOP_LEVEL})
 option(CORSANO_BUILD_C "Build the C API shared library" ${PROJECT_IS_TOP_LEVEL})
 option(CORSANO_BUILD_DOCS "Build Doxygen HTML documentation (target: doc)" OFF)
 
+# Warning flags per compiler (MSVC's -Wall means /Wall, far too noisy)
+set(CORSANO_WARNINGS $<IF:$<CXX_COMPILER_ID:MSVC>,/W4,-Wall;-Wextra>)
+# MSVC deprecates portable CRT calls (getenv, strncpy) in favour of *_s ones
+add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>)
+
 # On Linux SimpleBLE needs libdbus-1-dev.
 include(FetchContent)
 FetchContent_Declare(simpleble
@@ -28,7 +33,7 @@ add_library(corsano::protocol ALIAS corsano_protocol)
 target_include_directories(corsano_protocol PUBLIC include)
 target_compile_features(corsano_protocol PUBLIC cxx_std_20)
 set_target_properties(corsano_protocol PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_options(corsano_protocol PRIVATE -Wall -Wextra)
+target_compile_options(corsano_protocol PRIVATE ${CORSANO_WARNINGS})
 
 add_library(corsano STATIC src/bracelet.cpp src/monitor.cpp)
 add_library(corsano::corsano ALIAS corsano)
@@ -36,14 +41,16 @@ target_include_directories(corsano PUBLIC include)
 find_package(Threads REQUIRED)
 target_link_libraries(corsano PUBLIC corsano_protocol PRIVATE simpleble::simpleble Threads::Threads)
 set_target_properties(corsano PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_options(corsano PRIVATE -Wall -Wextra)
+target_compile_options(corsano PRIVATE ${CORSANO_WARNINGS})
 
 if(CORSANO_BUILD_C)
   add_library(corsano_c SHARED src/corsano_c.cpp)
   add_library(corsano::c ALIAS corsano_c)
   target_include_directories(corsano_c PUBLIC include)
   target_link_libraries(corsano_c PRIVATE corsano)
-  target_compile_options(corsano_c PRIVATE -Wall -Wextra)
+  target_compile_options(corsano_c PRIVATE ${CORSANO_WARNINGS})
+  # MSVC exports nothing from a DLL unless told to
+  set_target_properties(corsano_c PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
 if(CORSANO_BUILD_TESTS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)

@@ -1,14 +1,16 @@
 cmake_minimum_required(VERSION 3.24)
-project(corsano LANGUAGES C CXX)
+project(corsano VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON) # static SimpleBLE into a shared lib
 
-option(CORSANO_BUILD_TESTS "Build tests" ON)
-option(CORSANO_BUILD_CLI "Build CLI" ON)
-option(CORSANO_BUILD_C "Build the C API shared library" ON)
+# Extras default to ON only when built on its own, so a FetchContent consumer
+# gets just the libraries (and no Catch2/cxxopts downloads)
+option(CORSANO_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+option(CORSANO_BUILD_CLI "Build CLI" ${PROJECT_IS_TOP_LEVEL})
+option(CORSANO_BUILD_C "Build the C API shared library" ${PROJECT_IS_TOP_LEVEL})
 option(CORSANO_BUILD_DOCS "Build Doxygen HTML documentation (target: doc)" OFF)
 
 # On Linux SimpleBLE needs libdbus-1-dev.
@@ -22,6 +24,7 @@ FetchContent_MakeAvailable(simpleble)
 
 # Pure codec, no BLE dependency (offline tests link this)
 add_library(corsano_protocol STATIC src/protocol.cpp src/files.cpp)
+add_library(corsano::protocol ALIAS corsano_protocol)
 target_include_directories(corsano_protocol PUBLIC include)
 target_compile_features(corsano_protocol PUBLIC cxx_std_20)
 set_target_properties(corsano_protocol PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -37,6 +40,7 @@ target_compile_options(corsano PRIVATE -Wall -Wextra)
 
 if(CORSANO_BUILD_C)
   add_library(corsano_c SHARED src/corsano_c.cpp)
+  add_library(corsano::c ALIAS corsano_c)
   target_include_directories(corsano_c PUBLIC include)
   target_link_libraries(corsano_c PRIVATE corsano)
   target_compile_options(corsano_c PRIVATE -Wall -Wextra)
@@ -54,7 +58,7 @@ if(CORSANO_BUILD_DOCS)
   find_package(Doxygen REQUIRED OPTIONAL_COMPONENTS dot)
   set(DOXYGEN_PROJECT_NAME corsano-ble)
   set(DOXYGEN_PROJECT_BRIEF "C++20 BLE library and C API for Corsano bracelets")
-  set(DOXYGEN_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/doc)
+  set(DOXYGEN_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/doc)
   set(DOXYGEN_GENERATE_HTML YES)
   set(DOXYGEN_GENERATE_LATEX NO)
   set(DOXYGEN_EXTRACT_ALL NO)

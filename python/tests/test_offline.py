@@ -160,9 +160,10 @@ class Offline(unittest.TestCase):
         # x86-64/arm64 LP64; verified against C offsetof in the layout check
         self.assertEqual(ctypes.sizeof(corsano.CSample), 32)
         self.assertEqual(corsano.CSample.record.offset, 24)
-        self.assertEqual(ctypes.sizeof(corsano.CMonitorConfig), 56)
+        self.assertEqual(ctypes.sizeof(corsano.CMonitorConfig), 64)
         self.assertEqual(corsano.CMonitorConfig.profile.offset, 32)
-        self.assertEqual(corsano.CMonitorConfig.max_queue.offset, 48)
+        self.assertEqual(corsano.CMonitorConfig.host_id.offset, 40)
+        self.assertEqual(corsano.CMonitorConfig.max_queue.offset, 56)
 
     def test_monitor_offline(self):
         try:

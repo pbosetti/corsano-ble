@@ -23,11 +23,13 @@
 
 #include <chrono>
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -99,6 +101,8 @@ enum class CommandId : uint8_t {
   StartSpecialMode = 216, ///< Payload 4 = Wearing Optimization
   StopSpecialMode = 217,              ///< Stop a special mode.
   GetSpecialMode = 246, ///< Payload u32 mode, see decode_wearing_optimization()
+  Authenticate = 250,   ///< FW >= 8.41: `A7 16` + 8-byte host id, see encode_authenticate()
+  GetAuthStatus = 251,  ///< FW >= 8.41: payload `0`; 100 = connection authenticated
   SetRealtimeEnable = 220,            ///< Enable/disable RealtimePing notifications.
   GetRealtimeEnable = 221,            ///< Read the realtime-enable flag.
   RealtimePing = 222, ///< Unsolicited, see RealtimePing
@@ -373,6 +377,35 @@ std::vector<uint8_t> encode_user_profile(const UserProfile &profile,
 /// @throws ProtocolError on short input.
 WearingOptimizationStatus
 decode_wearing_optimization(std::span<const uint8_t> payload);
+
+// MARK: - Authentication (FW >= 8.41)
+/// @name Authentication
+/// Firmware 8.41+ acts on commands only from an authenticated connection,
+/// and authentication does not survive a disconnection (developer.corsano.com,
+/// Android "Bracelet Initialization"). It is an identification handshake: no
+/// licence, key or signature is involved.
+/// @{
+
+/// @brief First firmware that requires authentication.
+inline constexpr FirmwareVersion AuthMinFirmware{8, 41};
+
+/// @brief Fold a host id into the firmware's 8-byte field, as the SDK does.
+/// @param host_id Any stable per-host string (the SDK uses Android's
+///        ANDROID_ID).
+/// @return Its 8 bytes if @p host_id is exactly 16 hex digits, else the first
+///         8 bytes of SHA-256(@p host_id).
+std::array<uint8_t, 8> host_id_bytes(std::string_view host_id);
+
+/// @brief Encode the Authenticate (250) payload: `A7 16` + host_id_bytes().
+/// @param host_id Host id, see host_id_bytes().
+/// @return The 10-byte payload.
+std::vector<uint8_t> encode_authenticate(std::string_view host_id);
+
+/// @brief SHA-256 digest (used by host_id_bytes()).
+/// @param data Input bytes.
+/// @return The 32-byte digest.
+std::array<uint8_t, 32> sha256(std::span<const uint8_t> data);
+/// @}
 /// @brief Decode a GetPlan response.
 ///
 /// Layout: `[plan][ppg2_rate][ppg1_rate]` (shorter responses keep defaults).

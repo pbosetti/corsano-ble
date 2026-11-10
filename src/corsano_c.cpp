@@ -402,6 +402,23 @@ int corsano_set_time(corsano_t *obj) {
   return guard([&] { obj->bracelet.set_time(); });
 }
 
+// MARK: - Authentication
+
+int corsano_set_host_id(corsano_t *obj, const char *host_id) {
+  if (!obj)
+    return bad_argument("NULL handle");
+  return guard([&] {
+    if (host_id && *host_id) // NULL/"" keeps the host-name default
+      obj->bracelet.set_host_id(host_id);
+  });
+}
+
+int corsano_authenticated(corsano_t *obj, bool *out) {
+  if (!obj || !out)
+    return bad_argument("NULL argument");
+  return guard([&] { *out = obj->bracelet.authenticated(); });
+}
+
 // MARK: - Plan
 
 int corsano_plan(corsano_t *obj, uint8_t *plan, uint8_t *ppg2_rate,
@@ -644,6 +661,8 @@ corsano_monitor_t *corsano_monitor_init(const char *device,
                          static_cast<Ppg2Rate>(cfg->ppg2_rate), cfg->ppg1_rate};
       if (cfg->profile)
         c.profile = from_c(*cfg->profile);
+      if (cfg->host_id)
+        c.host_id = cfg->host_id;
       c.interval = std::chrono::milliseconds(cfg->interval_ms);
       c.max_queue = cfg->max_queue;
     }

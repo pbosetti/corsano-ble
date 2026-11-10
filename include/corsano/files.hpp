@@ -110,13 +110,13 @@ Decoded<PpgChunk> decode_ppg(std::span<const uint8_t> data);
 /// @see decode_stress()
 struct StressRecord {
   uint32_t timestamp_s; ///< Record time, epoch seconds.
-  uint8_t cognitive_zone, /**< Cognitive zone */cognitive_zone_quality; ///< Cognitive zone quality
-  uint8_t predicted_cognitive_zone; ///< Predicted cognitive zone.
-  uint16_t predicted_transition_time; ///< Predicted time of the zone transition.
-  uint8_t cognitive_zone_hour; ///< Cognitive zone hour.
-  uint32_t cortisol_contribution; ///< Cortisol contribution.
-  uint16_t skin_conductance_stress; ///< Stress level from skin conductance
-  uint8_t skin_conductance_stress_quality; ///< Quality of skin_conductance_stress.
+  uint8_t cognitive_zone, /**< Cognitive zone: 0 undefined, 1 under-stimulated, 2 balanced, 3 over-stimulated */cognitive_zone_quality; ///< Quality of cognitive_zone, 0..4
+  uint8_t predicted_cognitive_zone; ///< Predicted cognitive zone, 0..3 as cognitive_zone.
+  uint16_t predicted_transition_time; ///< Minutes until the predicted zone transition.
+  uint8_t cognitive_zone_hour; ///< Cognitive zone expected one hour ahead, 0..3.
+  uint32_t cortisol_contribution; ///< Cortisol contribution (undocumented unit; grows steadily over the day).
+  uint16_t skin_conductance_stress; ///< Stress level from skin conductance, 0..1000
+  uint8_t skin_conductance_stress_quality; ///< Quality of skin_conductance_stress, 0..4.
 };
 
 /// @brief Decode FileId::Stress data.
@@ -140,7 +140,7 @@ inline constexpr double BiozSampleRateHz = 25.0;
 /// @brief Accelerometer sample rate in Hz.
 inline constexpr double AccSampleRateHz = 32.0;
 /// @brief Accelerometer counts per g (observed at rest, unverified).
-inline constexpr double AccCountsPerG = 512.0; // observed at rest, unverified
+inline constexpr double AccCountsPerG = 512.0; // documented unit 1/512 g; matches rest readings
 
 /// @brief One bioimpedance chunk (nominally 25 samples = 1 s).
 /// @see decode_bioz()

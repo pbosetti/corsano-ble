@@ -136,6 +136,15 @@ TEST_CASE("realtime pings carry plausible vitals", "[online]") {
   }
 }
 
+// MARK: - Authentication
+
+TEST_CASE("authentication", "[online]") {
+  REQUIRE_DEVICE();
+  auto &bracelet = shared_bracelet();
+  CHECK_FALSE(bracelet.host_id().empty());
+  CHECK(bracelet.authenticated()); // FW < 8.41: true, nothing sent
+}
+
 // MARK: - Files
 
 TEST_CASE("activity file size and download", "[online]") {

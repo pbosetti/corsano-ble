@@ -282,6 +282,25 @@ int corsano_plan(corsano_t *obj, uint8_t *plan, uint8_t *ppg2_rate,
 int corsano_set_plan(corsano_t *obj, uint8_t plan, uint8_t ppg2_rate,
                      uint8_t ppg1_rate);
 
+/* MARK: - Authentication (FW >= 8.41) */
+
+/**
+ * @brief Set the host id used to authenticate on connect (FW >= 8.41).
+ * @param obj Bracelet handle; call before corsano_connect().
+ * @param host_id Any stable per-host string; NULL or "" = this host's name.
+ * @return CORSANO_OK, or CORSANO_ERR_ARGUMENT for a NULL handle.
+ * @see Corsano::Bracelet::set_host_id()
+ */
+int corsano_set_host_id(corsano_t *obj, const char *host_id);
+/**
+ * @brief Whether the connection is authenticated (true on FW < 8.41).
+ * @param obj Bracelet handle.
+ * @param out Receives the result.
+ * @return CORSANO_OK or a CORSANO_ERR_* code.
+ * @see Corsano::Bracelet::authenticated()
+ */
+int corsano_authenticated(corsano_t *obj, bool *out);
+
 /* MARK: - User profile and calibration (values as Corsano::Gender, Wrist,
  * SkinType; see protocol.hpp) */
 
@@ -569,6 +588,7 @@ typedef struct {
   int plan;      /**< -1 = leave as is, else Corsano::Plan applied on connect */
   uint8_t ppg2_rate, /**< Corsano::Ppg2Rate value */ppg1_rate; /**< PPG1 rate; used when plan >= 0 */
   const corsano_user_profile_t *profile; /**< NULL = leave as is; copied at init */
+  const char *host_id; /**< FW >= 8.41 authentication; NULL/"" = host name; copied at init */
   int interval_ms; /**< Minimum time per poll pass in ms; 0 = as soon as possible. */
   size_t max_queue; /**< Queue limit; when full the oldest samples are dropped (reported as status.dropped). */
 } corsano_monitor_config_t;

@@ -129,6 +129,8 @@ struct Monitor::Impl {
         std::lock_guard lock(bracelet_mutex);
         bracelet.emplace(address);
       }
+      if (!config.host_id.empty())
+        bracelet->set_host_id(config.host_id);
       bracelet->connect();
     } catch (const std::exception &e) {
       set_error(e.what());

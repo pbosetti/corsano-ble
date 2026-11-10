@@ -109,6 +109,28 @@ public:
   const std::string &address() const;
   /// @}
 
+  // MARK: - Authentication
+  /// @name Authentication (FW >= 8.41)
+  /// connect() reads the firmware version and, on FW >= #AuthMinFirmware,
+  /// authenticates with host_id() before returning; older firmware gets
+  /// nothing. Needed again on every connection.
+  /// @{
+
+  /// @brief Set the host id used by connect(); call before connect().
+  /// @param host_id Any stable per-host string, see host_id_bytes().
+  void set_host_id(std::string host_id);
+  /// @brief Host id used for authentication (default: this host's name).
+  /// @return The host id.
+  const std::string &host_id() const;
+  /// @brief Authenticate this connection explicitly (Authenticate, 250).
+  /// @throws ProtocolError if the bracelet refuses.
+  void authenticate();
+  /// @brief Whether this connection is authenticated (GetAuthStatus, 251).
+  /// @return True if authenticated, or if the firmware predates
+  ///         #AuthMinFirmware (nothing is sent then).
+  bool authenticated();
+  /// @}
+
   // MARK: - Raw commands
   /// @name Raw commands
   /// @{

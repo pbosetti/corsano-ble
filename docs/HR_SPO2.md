@@ -100,3 +100,29 @@ route to backfill gaps after a disconnect. CLI:
 - **Spot measurement** (`StartSpecialMode`, payload 1). It probably starts an
   on-demand measurement whose result shows up in routes 1 or 4. Unverified.
   Use `command(216, {1})` to try it.
+
+## Recommended setup for SpO2
+
+Based on developer.corsano.com and the FW 8.12 sessions above:
+
+1. **Set the user profile**: `corsano-cli profile --set`, from
+   `corsano-profile.txt`. The docs say "wrist is mandatory for every metric".
+   A placeholder profile (invalid wrist, wrong skin type) produced the
+   103/106 alerts.
+2. **Run Wearing Optimization**: `corsano-cli calibrate`. Sit or lie still,
+   with the bracelet snug a finger above the wrist bone. Aim for quality
+   ≥ 70; 50 is the pass mark.
+3. **Choose a plan** that measures SpO2 often enough. Typical measures it
+   every 30 min, Hospital every 10 s. `MonitorConfig::plan` re-applies the
+   plan on every connect.
+4. **Set bedtime and risetime** (GMT). The sleep window runs from 2 h before
+   bedtime to 3 h after risetime, and SpO2 is mostly a night-time
+   measurement.
+5. **Keep still while measuring.** 104 is the motion alert. 105 (venous
+   pooling) discards the data: don't rest the arm under the body.
+
+Filter: use `spo2` only when `spo2_q` is 2–4. Treat 0–1 as informational,
+and 103–106 as alerts (see PROTOCOL.md).
+
+The SDK's "SpO2 spot measurement" records a value from an **external**
+oximeter (cmd 247). The bracelet does not measure on demand.

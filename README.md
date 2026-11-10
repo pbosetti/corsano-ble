@@ -115,6 +115,8 @@ cfg.plan = {Corsano::Plan::Hospital};    // optional: re-applied on every reconn
 cfg.profile = Corsano::UserProfile{      // optional: needed for good SpO2
     std::chrono::year{1971} / 2 / 28, Corsano::Gender::Male,
     Corsano::Wrist::Right, Corsano::SkinType::Olive, 185, 79};
+// cfg.host_id = "my-host";  // FW >= 8.41 authenticates automatically on
+//                          // connect; the id defaults to this host's name
 // cfg.live_hr = true;   // HR every 2 s (workout mode), but stops Activity
 //                       // records (SpO2, respiration, steps) while on
 // cfg.erase = false;    // keep data on the bracelet (deduplicates instead)

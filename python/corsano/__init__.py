@@ -206,6 +206,7 @@ class CMonitorConfig(C.Structure):
                 ("set_time", C.c_bool), ("plan", C.c_int),
                 ("ppg2_rate", u8), ("ppg1_rate", u8),
                 ("profile", C.POINTER(CUserProfile)),
+                ("host_id", C.c_char_p),
                 ("interval_ms", C.c_int), ("max_queue", C.c_size_t)]
 
 
@@ -436,6 +437,8 @@ _proto("corsano_battery", _i, _h, _P(CBattery))
 _proto("corsano_firmware_version", _i, _h, _P(CFirmware))
 _proto("corsano_serial_number", _i, _h, C.c_char_p, _sz)
 _proto("corsano_set_time", _i, _h)
+_proto("corsano_set_host_id", _i, _h, C.c_char_p)
+_proto("corsano_authenticated", _i, _h, _P(C.c_bool))
 _proto("corsano_plan", _i, _h, _P(u8), _P(u8), _P(u8))
 _proto("corsano_set_plan", _i, _h, u8, u8, u8)
 _proto("corsano_user_profile", _i, _h, _P(CUserProfile))
@@ -534,11 +537,15 @@ class Bracelet:
     Callbacks (on_*) are invoked from the BLE backend thread, not the caller's.
     """
 
-    def __init__(self, address: str):
+    def __init__(self, address: str, host_id: Optional[str] = None):
+        """host_id: identity sent to FW >= 8.41 on connect (default: this
+        host's name). Use the same one across runs."""
         self.address = address
         self._h: Optional[int] = _lib.corsano_init(address.encode())
         if not self._h:
             raise CorsanoError(-5, _last_error() or "corsano_init failed")
+        if host_id:
+            _check(_lib.corsano_set_host_id(self._h, host_id.encode()))
         self._cbs: dict[str, object] = {}
 
     def __enter__(self) -> "Bracelet":
@@ -612,6 +619,13 @@ class Bracelet:
         buf = C.create_string_buffer(64)
         _check(_lib.corsano_serial_number(self._handle, buf, 64))
         return buf.value.decode("utf-8", "replace")
+
+    @property
+    def authenticated(self) -> bool:
+        """True if this connection is authenticated (always True on FW < 8.41)."""
+        o = C.c_bool()
+        _check(_lib.corsano_authenticated(self._handle, C.byref(o)))
+        return o.value
 
     def set_time(self) -> None:
         _check(_lib.corsano_set_time(self._handle))
@@ -763,7 +777,8 @@ class Monitor:
                  set_time: bool = True,
                  plan: Union[Plan, PlanSettings, None] = None,
                  interval: float = 0.0, max_queue: int = 100000,
-                 profile: Optional[UserProfile] = None):
+                 profile: Optional[UserProfile] = None,
+                 host_id: Optional[str] = None):
         cfg = CMonitorConfig()
         _lib.corsano_monitor_config_default(C.byref(cfg))
         self._files = None
@@ -780,6 +795,8 @@ class Monitor:
         if profile is not None:
             self._profile = _profile_to_c(profile)
             cfg.profile = C.pointer(self._profile)
+        self._host_id = host_id.encode() if host_id else None  # kept alive
+        cfg.host_id = self._host_id
         cfg.interval_ms = int(interval * 1000)
         cfg.max_queue = max_queue
         self._m: Optional[int] = _lib.corsano_monitor_init(

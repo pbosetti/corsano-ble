@@ -49,6 +49,14 @@ sample; `stress`: `time,cognitive_zone,cognitive_zone_q,predicted_zone,predicted
 On macOS the address is the CoreBluetooth UUID shown by `corsano-cli scan`; on
 Linux it is the MAC. The bracelet must be paired first (PIN 999999).
 
+## Firmware 8.41+ authentication
+
+Automatic: on firmware 8.41 or later, every command that connects
+authenticates first (older firmware is sent nothing). The host id defaults to
+this machine's name; `--host-id ID` overrides it, and using the same one across
+runs is recommended. `info` prints `host_id,<id>` and `authenticated,<0|1>`. No
+licence is involved.
+
 ## follow
 
 A thin printer over `Corsano::Monitor` (background thread: reconnects with

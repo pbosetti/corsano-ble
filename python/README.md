@@ -78,3 +78,9 @@ Caveats: callbacks run on the BLE backend thread (keep them short, guard
 shared state); exceptions in them are printed to stderr, not propagated.
 Methods on a closed `Bracelet` raise `ArgumentError`.
 Tests: `python3 -I -m unittest discover -s python/tests -v`.
+
+## Firmware 8.41+ authentication
+
+Automatic on connect. The host id defaults to this host's name; set it with
+`Bracelet(addr, host_id="...")` or `Monitor(addr, host_id="...")` and keep it
+the same across runs. `bracelet.authenticated` reports the state.

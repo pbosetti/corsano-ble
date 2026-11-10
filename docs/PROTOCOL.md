@@ -264,16 +264,27 @@ The commands above come from SDK 1.1.29, which targets FW 7.97.
 `com.corsano.sdk:ble:2.3.0` adds the following.
 
 **Host authentication (FW ≥ 8.41 only, per the SDK constant
-`FIRMWARE_VERSION_CMD_AUTHENTICATE_VERSION_*`).** Unverified: the test
-bracelet runs 8.12.
+`FIRMWARE_VERSION_CMD_AUTHENTICATE_VERSION_*`).** Not exercised on hardware:
+the test bracelet runs 8.12, which needs none. The developer page (Android
+"Bracelet Initialization", FW 8.48) states that the bracelet requires an
+authenticated connection before it acts on commands, and that authentication
+does not survive a disconnection, so it is repeated on every connect.
+`GetFwVersion` is allowed before authentication (the SDK exempts it).
 
 | Id | Name | Request | Response |
 |---|---|---|---|
 | 250 | Authenticate | `0xA7` (AUTH_KEY 167), `0x16` (model id 22 = Android), `phone_id:8` | status |
 | 251 | GetAuthStatus | `0` | `100` = authenticated |
 
-`phone_id`: a 16-hex-char string is used as its 8 bytes; any other string is
-replaced by `SHA-256(utf8)[0:8]`. The SDK licence key is **not** sent to the
+`phone_id` is the phone's id (Android: `ANDROID_ID`) folded to 8 bytes: a
+string of exactly 16 hex digits (either case) is used as its 8 bytes in order;
+any other string is replaced by `SHA-256(utf8)[0:8]`. Status `100` =
+authenticated.
+
+corsano-ble does this automatically in `Bracelet::connect()` (FW version
+first, then Authenticate when ≥ 8.41); the host id defaults to the host name
+and can be set with `Bracelet::set_host_id()`, `MonitorConfig::host_id`,
+`corsano_set_host_id()` or `--host-id`. The SDK licence key is **not** sent to the
 bracelet. The data SDK posts it to `api.health.cloud.corsano.com`, which
 returns `is_authorised`, the licence dates and a `raw_data_id_list`. That is
 an app-side gate only.
@@ -349,3 +360,45 @@ data chunk. Chunks of all `0xFF` are erased flash and are skipped.
 Splitting: scan for `"OHR"`; `len == 0` or `len > 4096` resyncs by 1 byte; a
 record that is not complete yet stops the scan (not consumed). A chunk whose
 `clen` overruns its record is skipped but the record is consumed.
+
+## Semantics from developer.corsano.com
+
+Read on 2026-11-10 from the Android Developer Guide, Data Models and Bracelet
+pages. They complement the byte layouts above, which come from the SDK.
+
+- **Set commands** acknowledge with `100`. The SDK treats any other value as
+  `false`, not as an error. FW 8.12 answers `1` for refused sets, e.g. 223.
+- **Realtime ping (222):** documented as "every 25 seconds" once enabled, for
+  B2 bracelets, while connected. On FW 8.12 we receive only one ping per
+  connection, ~12 s after connecting. Cause unknown.
+- **RegularPing (125):** documented as once a minute, triggering the data
+  download.
+- **Stress / "Emography" record** (B2 only; enable with cmd 192 `[1, …]`):
+  - `cognitive_zone`: 0 undefined, 1 under-stimulated, 2 balanced,
+    3 over-stimulated; quality 0–4.
+  - `predicted_cognitive_zone`: 0–3.
+  - `predicted_transition_time`: minutes until the predicted transition.
+  - `cognitive_zone_hour`: zone expected one hour ahead.
+  - `skin_conductance_stress`: 0–1000, with quality 0–4.
+  - `cortisol_contribution`: undocumented; on FW 8.12 it grows steadily.
+- **BioZ / stress and 128 Hz PPG** cannot be enabled together.
+- **Accelerometer unit:** 1/512 g, ±8 g. Movement norm per sample =
+  `|Δacc|` between consecutive samples (≈0 when still).
+- **PPG2:** a channel is the pair (colour, LED/photodiode position). Each pair
+  has its own clock; all channels of a chunk start at the same time. The
+  rollover correction is per pair.
+- **ECG** (B2): 256 Hz, 50 s per measurement (8 s warm-up + 42 s data). A blue
+  LED is on while it runs, and other metrics pause meanwhile. The SDK stores
+  it as `.wiff` parts; the byte format is not published.
+- **User profile:** "wrist is mandatory for every metric". Skin type is
+  Fitzpatrick (1 very fair … 6 black-brown). Height and weight are used in
+  the bracelet's calculations.
+- **Sleep window:** monitoring runs from bedtime − 2 h to risetime + 3 h, or
+  until 250 steps in the morning. Bedtime and risetime are set in **GMT**
+  (cmds 40/41 set, 52/53 get, `[hour, minute]`).
+- **Reset (24):** the firmware does not always restore time, user profile
+  and plan afterwards, so send them again.
+- **Raw `.wiff` parsing:** Corsano provides Python/PHP sample parsers on
+  request (corsano.com/contact-us).
+
+> To be asked to Corsano: the .wiff parsers for PPG2 and ECG (available on request), whether the bracelet binds to a single host id, and why the realtime ping arrives only once.

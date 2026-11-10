@@ -125,6 +125,8 @@ std::string resolve_address(const cxxopts::ParseResult &args) {
 
 Bracelet connect(const cxxopts::ParseResult &args) {
   Bracelet b(resolve_address(args));
+  if (args.count("host-id"))
+    b.set_host_id(args["host-id"].as<std::string>());
   std::cerr << "connecting...\n";
   b.connect();
   std::cerr << "connected\n";
@@ -349,6 +351,8 @@ int cmd_info(const cxxopts::ParseResult &args) {
   std::string out = "key,value\n";
   out += "serial," + b.serial_number() + "\n";
   out += fmt("firmware,%d.%d\n", fw.major, fw.minor);
+  out += "host_id," + b.host_id() + "\n";
+  out += fmt("authenticated,%d\n", b.authenticated());
   out += fmt("battery_percent,%d\n", bat.percent);
   out += fmt("battery_mv,%d\n", bat.millivolts);
   out += fmt("charging,%d\n", bat.charging);
@@ -702,6 +706,8 @@ int cmd_follow(const cxxopts::ParseResult &args) {
   cfg.live_hr = args.count("hrm") > 0;
   cfg.erase = !args.count("keep");
   cfg.set_time = !args.count("no-set-time");
+  if (args.count("host-id"))
+    cfg.host_id = args["host-id"].as<std::string>();
   double interval = args["interval"].as<double>();
   if (interval < 0)
     throw std::runtime_error("--interval must be >= 0");
@@ -869,6 +875,7 @@ int main(int argc, char **argv) {
     ("hrm", "follow: add workout-mode LiveHrm (HR every 2 s); stops Activity logging while on")
     ("plan", "follow: apply a measurement plan on every (re)connect (see `plan`)", cxxopts::value<std::string>())
     ("set", "plan: set this plan (e.g. hospital) before printing", cxxopts::value<std::string>())
+    ("host-id", "FW >= 8.41 authentication id (default: host name); keep it the same across runs", cxxopts::value<std::string>())
     ("upload", "profile: upload the profile file first (spelled --set on the command line)")
     ("profile", "profile file (default ./corsano-profile.txt); profile, calibrate, follow", cxxopts::value<std::string>())
     ("save", "profile: write the bracelet's profile to the profile file")

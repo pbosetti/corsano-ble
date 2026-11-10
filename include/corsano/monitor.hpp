@@ -61,6 +61,9 @@ struct MonitorConfig {
   std::optional<PlanSettings> plan;
   /// Applied on every (re)connect when set (before the plan)
   std::optional<UserProfile> profile;
+  /// Host id for FW >= 8.41 authentication on every (re)connect; empty =
+  /// this host's name (see Bracelet::set_host_id()).
+  std::string host_id;
   std::chrono::milliseconds interval{0}; ///< Min time per poll pass; 0 = ASAP
   size_t max_queue = 100'000;            ///< Queue limit; full: drop oldest, report dropped
   /// Called (on the monitor thread) with every downloaded buffer, before

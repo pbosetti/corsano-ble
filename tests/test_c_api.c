@@ -157,13 +157,15 @@ int main(void) {
   assert(corsano_wearing_optimization_status(NULL, NULL) ==
          CORSANO_ERR_ARGUMENT);
   assert(corsano_stop_wearing_optimization(NULL) == CORSANO_ERR_ARGUMENT);
+  assert(corsano_set_host_id(NULL, "x") == CORSANO_ERR_ARGUMENT);
+  assert(corsano_authenticated(NULL, NULL) == CORSANO_ERR_ARGUMENT);
   assert(CORSANO_SPO2_MOTION == 104);
   assert(strlen(corsano_last_error()) > 0);
 
   /* Monitor: no device needed until start */
   corsano_monitor_config_t mc;
   corsano_monitor_config_default(&mc);
-  assert(mc.profile == NULL);
+  assert(mc.profile == NULL && mc.host_id == NULL);
   assert(mc.files == NULL && mc.n_files == 0 && !mc.live_hr && mc.erase &&
          mc.set_time && mc.plan == -1 && mc.ppg2_rate == 1 &&
          mc.ppg1_rate == 60 && mc.interval_ms == 0 && mc.max_queue == 100000);

@@ -6,6 +6,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <string_view>
 
@@ -320,4 +321,51 @@ TEST_CASE("SpO2 alert constants", "[protocol]") {
   CHECK(Spo2Motion == 104);
   CHECK(Spo2VenousPooling == 105);
   CHECK(Spo2SkinCondition == 106);
+}
+
+// MARK: - Authentication
+
+static std::string sha_hex(std::string_view s) {
+  auto d = sha256({reinterpret_cast<const uint8_t *>(s.data()), s.size()});
+  std::string out;
+  for (uint8_t b : d) {
+    char buf[3];
+    std::snprintf(buf, sizeof buf, "%02x", b);
+    out += buf;
+  }
+  return out;
+}
+
+TEST_CASE("sha256 known vectors", "[protocol][auth]") {
+  CHECK(sha_hex("") ==
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  CHECK(sha_hex("abc") ==
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  CHECK(sha_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+  CHECK(sha_hex(std::string(1000000, 'a')) ==
+        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+}
+
+TEST_CASE("host_id_bytes folding", "[protocol][auth]") {
+  using A = std::array<uint8_t, 8>;
+  const A hex{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+  CHECK(host_id_bytes("0123456789abcdef") == hex);
+  CHECK(host_id_bytes("0123456789ABCDEF") == hex);
+  CHECK(host_id_bytes("287-host") ==
+        A{0x72, 0xea, 0x01, 0xb1, 0x0d, 0x39, 0x43, 0x75});
+  // Not exactly 16 hex digits: hashed
+  for (const char *s :
+       {"0123456789abcde", "0123456789abcdef0", "0123456789abcdeg"}) {
+    auto d = sha256({reinterpret_cast<const uint8_t *>(s), std::strlen(s)});
+    CHECK(host_id_bytes(s) ==
+          A{d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]});
+  }
+}
+
+TEST_CASE("encode_authenticate", "[protocol][auth]") {
+  CHECK(encode_authenticate("0123456789abcdef") ==
+        Bytes{0xA7, 0x16, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF});
+  CHECK(uint8_t(CommandId::Authenticate) == 250);
+  CHECK(uint8_t(CommandId::GetAuthStatus) == 251);
 }

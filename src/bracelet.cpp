@@ -15,6 +15,10 @@
 #include <mutex>
 #include <optional>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace Corsano {
 
 namespace {
@@ -81,6 +85,24 @@ void debug_frame(const char *channel, const std::vector<uint8_t> &bytes) {
   std::fprintf(stderr, "[corsano] %s %s\n", channel, hex.c_str());
 }
 
+std::string default_host_id() {
+  std::string name;
+#ifdef _WIN32
+  if (const char *c = std::getenv("COMPUTERNAME"))
+    name = c;
+#else
+  char buf[256] = {};
+  if (gethostname(buf, sizeof buf - 1) == 0)
+    name = buf;
+#endif
+  return name.empty() ? "corsano-ble" : name;
+}
+
+bool needs_auth(FirmwareVersion v) {
+  return v.major > AuthMinFirmware.major ||
+         (v.major == AuthMinFirmware.major && v.minor >= AuthMinFirmware.minor);
+}
+
 } // namespace
 
 // MARK: - Impl
@@ -88,7 +110,8 @@ void debug_frame(const char *channel, const std::vector<uint8_t> &bytes) {
 struct Bracelet::Impl {
   using Clock = std::chrono::steady_clock;
 
-  explicit Impl(std::string addr) : address(std::move(addr)) {}
+  explicit Impl(std::string addr)
+      : address(std::move(addr)), host_id(default_host_id()) {}
 
   void on_data_info(const std::vector<uint8_t> &frame);
   void on_tx(const std::vector<uint8_t> &bytes);
@@ -109,8 +132,10 @@ struct Bracelet::Impl {
                                 ProgressCallback progress);
 
   const std::string address;
-  std::mutex command_mutex; // serializes commands and downloads
-  std::mutex mutex;         // guards everything below
+  std::string host_id;            // set before connect()
+  FirmwareVersion firmware{0, 0}; // read at connect()
+  std::mutex command_mutex;       // serializes commands and downloads
+  std::mutex mutex;               // guards everything below
   std::condition_variable cv;
   std::optional<uint8_t> pending_id;
   std::optional<std::vector<uint8_t>> response;
@@ -385,7 +410,37 @@ Bracelet &Bracelet::operator=(Bracelet &&) noexcept = default;
 // MARK: - Connection
 
 void Bracelet::connect(std::chrono::milliseconds scan_timeout) {
+  if (_impl->connected())
+    return;
   _impl->connect(scan_timeout);
+  try {
+    _impl->firmware = firmware_version(); // allowed before authentication
+    if (needs_auth(_impl->firmware))
+      authenticate();
+  } catch (...) {
+    _impl->disconnect();
+    throw;
+  }
+}
+
+// MARK: - Authentication
+
+void Bracelet::set_host_id(std::string host_id) {
+  _impl->host_id = std::move(host_id);
+}
+const std::string &Bracelet::host_id() const { return _impl->host_id; }
+
+void Bracelet::authenticate() {
+  auto payload = encode_authenticate(_impl->host_id);
+  expect_ok(command(uint8_t(CommandId::Authenticate), payload), "authenticate");
+}
+
+bool Bracelet::authenticated() {
+  if (!needs_auth(_impl->firmware))
+    return true;
+  const uint8_t zero[] = {0};
+  return first_byte(command(uint8_t(CommandId::GetAuthStatus), zero),
+                    "auth status") == StatusOk;
 }
 void Bracelet::disconnect() { _impl->disconnect(); }
 bool Bracelet::is_connected() const { return _impl->connected(); }

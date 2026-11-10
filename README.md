@@ -23,6 +23,14 @@ CORSANO_ADDR=<addr or name> ./build/tests/corsano_online_tests   # needs a brace
 Dependencies are fetched with FetchContent: SimpleBLE v1.4.0 (BUSL-1.1,
 free for non-commercial use), Catch2 v3.7.1 and cxxopts v3.2.1.
 
+## Documentation
+
+```sh
+cmake -Bbuild -DCORSANO_BUILD_DOCS=ON && cmake --build build --target doc
+```
+
+Requires Doxygen (Graphviz optional). Output: `build/doc/html/index.html`.
+
 ## Pairing
 
 The bracelet only accepts commands from a bonded host. The passkey is `999999`.

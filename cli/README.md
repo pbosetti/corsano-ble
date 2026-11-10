@@ -178,89 +178,116 @@ weight). `corsano-profile.txt` is listed in `.gitignore`; do not commit it.
 
 ## raw
 
-`raw` sends any command and prints the response payload in hex. The
-command id and CRC are stripped; on FW 8.12 replies are padded to 4 bytes.
-Each `-x ID[:HEX]` is one command, sent in order over one connection. Multi-byte
-values are little endian unless noted. Byte layouts are in
-[docs/PROTOCOL.md](../docs/PROTOCOL.md). A set command answers `64` (100) for
-OK; on FW 8.12, `01` means refused.
+`raw` sends any command and prints the response payload in hex plus a readable
+decoding. The command id and CRC are stripped; on FW 8.12 replies are padded to
+4 bytes. Each `-x NAME|ID[:ARGS]` is one command, sent in order over one
+connection. Multi-byte values are little endian unless noted. Byte layouts are
+in [docs/PROTOCOL.md](../docs/PROTOCOL.md). A set command answers `64` (100) for
+OK (`status=ok`); on FW 8.12, `01` means refused (`status=refused(1)`).
+
+Output is CSV: `id,name,request,response,decoded` (`request` and `response` in
+hex; `name` and `decoded` empty for ids the catalog does not know).
 
 ```sh
-corsano-cli raw -n 287-2B -x 63 -x 50 -x 150 -x 235:04   # FW, battery, plan, SpO2 rate
+corsano-cli raw -n 287-2B -x firmware -x battery -x get-plan -x get-sampling:spo2
+# id,name,request,response,decoded
+# 63,firmware,,0000080c,firmware=8.12
+# 50,battery,,517d0f03,battery=81% voltage=3965mV charging=yes
+# 150,get-plan,,07013c00,plan=typical-multicolor ppg2=32Hz ppg1=60
+# 235,get-sampling,04,043c0000,vital=spo2 interval=60s
 ```
 
-File ids: `01` PPG, `02` Activity, `09` PPG2, `0d` ECG, `0e` BioZ, `15` Stress,
-`16` Acc. Vital types: `01` activity, `02` pulse, `03` respiration, `04` SpO2,
-`05` temperature, `09` NIBP. Recording values: `01` off, `02` bedtime→risetime,
-`03` continuous.
+`corsano-cli raw --list` prints the catalog as CSV `id,name,set,description`
+without connecting. It is the authoritative list of command names; the tables
+below only add notes. Names are case-insensitive and `_` equals `-`. A number
+still works for any id, known or not (`-x 223:05`).
+
+Everything after the first `:` is hex (`-x set-height:b9`), except for these
+readable forms (validated before connecting):
+
+| `-x` | Meaning |
+|---|---|
+| `set-plan:hospital` | plan by name (as in `plan`), PPG2 32 Hz, PPG1 60 |
+| `set-sampling:spo2,60` | vital (`activity`, `pulse-rate`, `respiration`, `spo2`, `temperature`, `nibp`), seconds |
+| `get-sampling:spo2` | the same vital names |
+| `set-bedtime:21:30`, `set-risetime:06:30` | **local** time, sent as GMT using this host's UTC offset now |
+| `set-recording:stress-bioz,continuous` | `stress-bioz`, `acc` or `temperature-raw`; `off`, `bedtime-risetime` or `continuous` |
+| `get-recording:stress-bioz` | `stress-bioz`, `acc` or `temperature-raw` |
+| `set-realtime:on` | `on` or `off` |
+| `get-file-size:activity` | file by `history --file` name |
+
+File ids (hex): `01` PPG, `02` Activity, `09` PPG2, `0d` ECG, `0e` BioZ, `15`
+Stress, `16` Acc. Vital types: `01` activity, `02` pulse, `03` respiration,
+`04` SpO2, `05` temperature, `09` NIBP. Recording values: `01` off, `02`
+bedtime→risetime, `03` continuous.
 
 ### Device and time
 
-| `-x` | Command | Reply / notes |
-|---|---|---|
-| `63` | firmware version | `?? ?? MA MI` → MA.MI (`0000080c` = 8.12; MI ≥ 100 is divided by 10) |
-| `50` | battery | `%` `mV:u16` `state`, charging if 1, 3, 11 (`517d0f03` = 81 %, 3965 mV, charging) |
-| `70` | serial number | ASCII |
-| `156` | bracelet status | wearing, mode, battery %, charging, idle, -, wearing quality |
-| `152` | session status | mode, session, start:u32, duration:u16, status (2 finished) |
-| `51` | read clock | `u32` epoch seconds |
-| `22:…` | set clock | 8 bytes (UTC fields + offset); easier: `live --set-time`, or `follow`/Monitor, which do it on connect |
+| `-x` | Reply / notes |
+|---|---|
+| `firmware` | `?? ?? MA MI` → MA.MI (`0000080c` = 8.12; MI ≥ 100 is divided by 10) |
+| `battery` | `%` `mV:u16` `state`, charging if 1, 3, 11 (`517d0f03` = 81 %, 3965 mV, charging) |
+| `serial`, `device-name` | ASCII |
+| `bracelet-status` | wearing, mode, battery %, charging, idle, -, wearing quality (`04004200040063`) |
+| `session-status` | mode, session, start:u32, duration:u16, status (2 finished) |
+| `get-time` | `u32` epoch seconds (`6c28f36a` = 2026-11-10T14:21:32Z) |
+| `set-time:…` | 8 bytes (UTC fields + offset); easier: `live --set-time`, or `follow`/Monitor, which do it on connect |
 
 ### User profile (see `profile`)
 
-| `-x` | Command | Reply / notes |
-|---|---|---|
-| `57` | get profile | age, gender (0 m, 1 f, 2 unspecified), wrist (0 l, 1 r), skin 1–6 |
-| `56` | get birth date | `year:u16` month day |
-| `54` / `55` | get height cm / weight kg | `u8` |
-| `42:b9` / `43:4f` | set height 185 / weight 79 | status |
-| `44:…` | set profile | age, year **high byte first**, month, day, gender, wrist, skin: use `profile --set` |
-| `52` / `53` | get bedtime / risetime | `hh mm`, **GMT** |
-| `40:141e` / `41:051e` | set bedtime 20:30 / risetime 05:30 GMT | status; the sleep window is bedtime −2 h … risetime +3 h |
+| `-x` | Reply / notes |
+|---|---|
+| `get-profile` | age, gender (0 m, 1 f, 2 unspecified), wrist (0 l, 1 r), skin 1–6 (`37000103`) |
+| `get-birthdate` | `year:u16` month day (`b307021c` = 1971-02-28) |
+| `get-height`, `get-weight` | `u8` cm / kg |
+| `set-height:b9`, `set-weight:4f` | 185 cm / 79 kg |
+| `set-profile:…` | age, year **high byte first**, month, day, gender, wrist, skin: use `profile --set` |
+| `get-bedtime`, `get-risetime` | `hh mm`, **GMT** (`141e` = 20:30) |
+| `set-bedtime:21:30` | local time; hex form `set-bedtime:141e` is GMT. Sleep window: bedtime −2 h … risetime +3 h |
 
 ### Plan, sampling, recording (see `plan`)
 
-| `-x` | Command | Reply / notes |
-|---|---|---|
-| `150` | get plan | plan, PPG2 rate, ppg1 rate (`07013c` = typical-multicolor, 32 Hz, 60) |
-| `149:03013c` | set plan Hospital | status |
-| `235:04` | get SpO2 sampling | `04` `seconds:u16` (`043c00` = 60 s) |
-| `234:043c00` | set SpO2 sampling 60 s | status; 30 s gives empty records |
-| `193:01` / `193:02` / `193:04` | get stress+BioZ / acc / temp-raw recording | type, value(s) |
-| `192:010303` | stress + BioZ continuous | status; `192:010101` = off |
-| `192:0203` | accelerometer continuous | status |
+| `-x` | Reply / notes |
+|---|---|
+| `get-plan` | plan, PPG2 rate, ppg1 rate (`07013c` = typical-multicolor, 32 Hz, 60) |
+| `set-plan:hospital` | status (hex form `set-plan:03013c`) |
+| `get-sampling:spo2` | `04` `seconds:u16` (`043c00` = 60 s) |
+| `set-sampling:spo2,60` | status; 30 s gives empty records |
+| `get-recording:stress-bioz` | type, value(s) (`01030300`) |
+| `set-recording:stress-bioz,continuous` | status; hex `192:010303`, off = `192:010101` |
+| `set-recording:acc,continuous` | status; hex `192:0203` |
 
 ### Live data
 
-| `-x` | Command | Reply / notes |
-|---|---|---|
-| `221` / `220:01` | get / set realtime ping enable | FW 8.12: one ping per connection |
-| `224` | get realtime period | `u8` seconds (25 on FW 8.12) |
-| `223:05` | set realtime period | FW 8.12 answers `01` (refused) |
-| `16` / `155` | workout start / stop | LiveHrm every 2 s while on; no Activity records |
+| `-x` | Reply / notes |
+|---|---|
+| `get-realtime`, `set-realtime:on` | realtime ping enable; FW 8.12: one ping per connection |
+| `get-realtime-period` | `u8` seconds (25 on FW 8.12) |
+| `set-realtime-period:05` | FW 8.12 answers `01` (refused) |
+| `workout-start`, `workout-stop` | LiveHrm every 2 s while on; no Activity records |
 
 ### Files (see `history`, `follow`)
 
-| `-x` | Command | Reply / notes |
-|---|---|---|
-| `46:02` | Activity file size | FW 8.12: `02` `size:u32`; FW 7.x: `size:u32` |
-| `45:0226000000` | erase the first 38 bytes of Activity | `file` `bytes:u32`; prefer `history --erase` |
+| `-x` | Reply / notes |
+|---|---|
+| `get-file-size:activity` | FW 8.12: `02` `size:u32`; FW 7.x: `size:u32` |
+| `erase-file:0226000000` | erase the first 38 bytes of Activity: `file` `bytes:u32`; prefer `history --erase` |
 
 ### Calibration and authentication
 
-| `-x` | Command | Reply / notes |
-|---|---|---|
-| `216:04` / `217:04` | Wearing Optimization start / stop | status; prefer `calibrate` |
-| `246:04000000` | Wearing Optimization status | `04 ? finished movement progress% quality` (≥ 50 passes) |
-| `251:00` | auth status (FW ≥ 8.41) | `64` = authenticated; done automatically, see above |
+| `-x` | Reply / notes |
+|---|---|
+| `start-special-mode:04`, `stop-special-mode:04` | Wearing Optimization start / stop; prefer `calibrate` |
+| `get-special-mode:04000000` | `04 ? finished movement progress% quality` (≥ 50 passes) |
+| `get-auth-status:00` | `64` = authenticated (FW ≥ 8.41); done automatically, see above |
 
 ### Careful
 
-| `-x` | Command | Effect |
-|---|---|---|
-| `21` | erase all files | all recorded data lost |
-| `24` | reset bracelet | resend time, profile and plan afterwards |
-| `111` | shut down | stops measuring and advertising until put on the charger |
+| `-x` | Effect |
+|---|---|
+| `erase-all` | all recorded data lost |
+| `reset` | reset bracelet; resend time, profile and plan afterwards |
+| `shutdown` | stops measuring and advertising until put on the charger |
 
 ## complot
 

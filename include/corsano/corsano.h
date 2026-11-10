@@ -282,6 +282,50 @@ int corsano_plan(corsano_t *obj, uint8_t *plan, uint8_t *ppg2_rate,
 int corsano_set_plan(corsano_t *obj, uint8_t plan, uint8_t ppg2_rate,
                      uint8_t ppg1_rate);
 
+/* MARK: - Command catalog (see Corsano::command_catalog()) */
+
+/** @brief One known command; mirrors Corsano::CommandInfo. */
+typedef struct {
+  uint8_t id;              /**< Wire id */
+  const char *name;        /**< Kebab-case name, e.g. "get-plan"; static */
+  const char *description; /**< One line; static */
+  bool is_set;             /**< Reply is a status byte (100 = OK) */
+} corsano_command_info_t;
+
+/**
+ * @brief All known commands, sorted by id.
+ * @param count Receives the number of entries (may be NULL).
+ * @return Static table; never freed by the caller.
+ * @see Corsano::command_catalog()
+ */
+const corsano_command_info_t *corsano_command_catalog(size_t *count);
+/**
+ * @brief Look up a command by id.
+ * @param id Wire id.
+ * @return Static entry, or NULL if unknown.
+ */
+const corsano_command_info_t *corsano_find_command_by_id(uint8_t id);
+/**
+ * @brief Look up a command by name (case-insensitive; `_` matches `-`).
+ * @param name Command name; NULL returns NULL.
+ * @return Static entry, or NULL if unknown.
+ */
+const corsano_command_info_t *corsano_find_command_by_name(const char *name);
+/**
+ * @brief Decode a command reply into readable `key=value` pairs.
+ * @param id Command id the reply belongs to.
+ * @param payload Reply payload (id and CRC stripped); may be NULL if size 0.
+ * @param size Payload size in bytes.
+ * @param out Buffer for the NUL-terminated text (truncated to capacity); may
+ *        be NULL to query the length.
+ * @param capacity Size of @p out in bytes.
+ * @return Length of the full description, excluding the NUL; 0 for unknown
+ *         ids or payloads that do not decode.
+ * @see Corsano::describe_reply()
+ */
+size_t corsano_describe_reply(uint8_t id, const uint8_t *payload, size_t size,
+                              char *out, size_t capacity);
+
 /* MARK: - Authentication (FW >= 8.41) */
 
 /**

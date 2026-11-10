@@ -181,6 +181,27 @@ class Offline(unittest.TestCase):
         with self.assertRaises(corsano.ArgumentError):
             m.poll()
 
+    def test_command_catalog(self):
+        cat = corsano.command_catalog()
+        self.assertGreater(len(cat), 40)
+        self.assertEqual([c.id for c in cat], sorted(c.id for c in cat))
+        plan = corsano.find_command("GET_plan")
+        self.assertEqual(plan, corsano.find_command(150))
+        self.assertEqual((plan.name, plan.is_set), ("get-plan", False))
+        self.assertTrue(corsano.find_command("set-plan").is_set)
+        self.assertIsNone(corsano.find_command("nonsense"))
+        self.assertIsNone(corsano.find_command(3))
+
+    def test_describe_reply(self):
+        d = corsano.describe_reply
+        self.assertEqual(d(150, bytes.fromhex("07013c00")),
+                         "plan=typical-multicolor ppg2=32Hz ppg1=60")
+        self.assertEqual(d(51, bytes.fromhex("6c28f36a")),
+                         "time=2026-11-10T14:21:32Z")
+        self.assertEqual(d(223, bytes.fromhex("01000000")),
+                         "status=refused(1)")
+        self.assertEqual(d(3, b"\x01"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

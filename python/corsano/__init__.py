@@ -463,6 +463,8 @@ _proto("corsano_decode_stress", _i, C.c_char_p, _sz, _P(CStress), _sz,
        _P(_sz), _P(_sz))
 _proto("corsano_decode_ppg", _i, C.c_char_p, _sz, _P(CPpgSample), _sz,
        _P(_sz), _P(_sz))
+_proto("corsano_command_catalog", C.c_void_p, _P(_sz))
+_proto("corsano_describe_reply", _sz, u8, C.c_char_p, _sz, C.c_char_p, _sz)
 _mon = C.c_void_p  # corsano_monitor_t*
 _proto("corsano_monitor_config_default", None, _P(CMonitorConfig))
 _proto("corsano_monitor_init", _mon, C.c_char_p, _P(CMonitorConfig))
@@ -870,3 +872,46 @@ class Monitor:
     def __iter__(self):
         while self._m and self.running:
             yield from self.wait()
+
+
+# MARK: - Command catalog
+
+
+class _CCommandInfo(C.Structure):
+    _fields_ = [("id", u8), ("name", C.c_char_p), ("description", C.c_char_p),
+                ("is_set", C.c_bool)]
+
+
+@dataclass(frozen=True)
+class CommandInfo:
+    id: int
+    name: str
+    description: str
+    is_set: bool  # reply is a status byte (100 = OK)
+
+
+def command_catalog() -> list[CommandInfo]:
+    """All known commands, sorted by id."""
+    n = _sz(0)
+    base = _lib.corsano_command_catalog(C.byref(n))
+    rows = (_CCommandInfo * n.value).from_address(base)
+    return [CommandInfo(r.id, r.name.decode(), r.description.decode(),
+                        bool(r.is_set)) for r in rows]
+
+
+def find_command(id_or_name: Union[int, str]) -> Optional[CommandInfo]:
+    """Look up a command by id or by name (case-insensitive, `_` == `-`)."""
+    if isinstance(id_or_name, int):
+        return next((c for c in command_catalog() if c.id == id_or_name),
+                    None)
+    key = id_or_name.lower().replace("_", "-")
+    return next((c for c in command_catalog() if c.name == key), None)
+
+
+def describe_reply(id: int, payload: bytes) -> str:
+    """Readable `key=value` text for a command reply ("" if unknown)."""
+    payload = bytes(payload)
+    n = _lib.corsano_describe_reply(id, payload, len(payload), None, 0)
+    buf = C.create_string_buffer(n + 1)
+    _lib.corsano_describe_reply(id, payload, len(payload), buf, n + 1)
+    return buf.value.decode()

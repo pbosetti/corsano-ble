@@ -378,6 +378,48 @@ std::vector<uint8_t> encode_user_profile(const UserProfile &profile,
 WearingOptimizationStatus
 decode_wearing_optimization(std::span<const uint8_t> payload);
 
+// MARK: - Command catalog
+/// @name Command catalog
+/// Names and human-readable reply decoding for every command corsano-ble
+/// knows, for tools and logs (e.g. `corsano-cli raw`). Raw ids not in the
+/// catalog still work everywhere; they just have no name or description.
+/// @{
+
+/// @brief One known command.
+struct CommandInfo {
+  uint8_t id;              ///< Wire id (see CommandId)
+  const char *name;        ///< Kebab-case name, e.g. "get-plan"; unique
+  const char *description; ///< One line, e.g. "Read plan and PPG2 rate"
+  bool is_set;             ///< Reply is a status byte (100 = OK)
+};
+
+/// @brief All known commands, sorted by id.
+/// @return Static table; never empty.
+std::span<const CommandInfo> command_catalog();
+
+/// @brief Look up a command by id.
+/// @param id Wire id.
+/// @return The entry, or nullptr if unknown.
+const CommandInfo *find_command(uint8_t id);
+
+/// @brief Look up a command by name (case-insensitive; `_` matches `-`).
+/// @param name Name as in CommandInfo::name.
+/// @return The entry, or nullptr if unknown.
+const CommandInfo *find_command(std::string_view name);
+
+/// @brief Decode a command reply into readable `key=value` pairs.
+///
+/// Set commands give `status=ok` or `status=refused(N)`; gets give their
+/// fields with units and names, e.g. `plan=typical-multicolor ppg2=32Hz
+/// ppg1=60`, `vital=spo2 interval=60s`, `time=2026-11-10T14:21:32Z`.
+/// @param id Command id the reply belongs to.
+/// @param payload Reply payload (id and CRC stripped, as Bracelet::command()
+///        returns it; FW padding is tolerated).
+/// @return The description; empty for unknown ids or payloads that do not
+///         decode. Never throws.
+std::string describe_reply(uint8_t id, std::span<const uint8_t> payload);
+/// @}
+
 // MARK: - Authentication (FW >= 8.41)
 /// @name Authentication
 /// Firmware 8.41+ acts on commands only from an authenticated connection,

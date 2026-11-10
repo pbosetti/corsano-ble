@@ -241,6 +241,46 @@ extern "C" {
 
 const char *corsano_last_error(void) { return LastError.c_str(); }
 
+// MARK: - Command catalog
+
+const corsano_command_info_t *corsano_command_catalog(size_t *count) {
+  // Built once (thread-safe static init) from the C++ catalog
+  static const std::vector<corsano_command_info_t> table = [] {
+    std::vector<corsano_command_info_t> t;
+    for (auto &c : command_catalog())
+      t.push_back({c.id, c.name, c.description, c.is_set});
+    return t;
+  }();
+  if (count)
+    *count = table.size();
+  return table.data();
+}
+
+const corsano_command_info_t *corsano_find_command_by_id(uint8_t id) {
+  size_t n;
+  auto *t = corsano_command_catalog(&n);
+  for (size_t i = 0; i < n; ++i)
+    if (t[i].id == id)
+      return &t[i];
+  return nullptr;
+}
+
+const corsano_command_info_t *corsano_find_command_by_name(const char *name) {
+  auto *c = name ? find_command(name) : nullptr;
+  return c ? corsano_find_command_by_id(c->id) : nullptr;
+}
+
+size_t corsano_describe_reply(uint8_t id, const uint8_t *payload, size_t size,
+                              char *out, size_t capacity) {
+  auto s = describe_reply(id, {payload, payload ? size : 0});
+  if (out && capacity) {
+    size_t n = std::min(s.size(), capacity - 1);
+    std::memcpy(out, s.data(), n);
+    out[n] = '\0';
+  }
+  return s.size();
+}
+
 // MARK: - Discovery
 
 int corsano_scan(int duration_ms, corsano_device_t *devices, size_t capacity,

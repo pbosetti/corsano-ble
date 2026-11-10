@@ -23,7 +23,7 @@ FetchContent_Declare(simpleble
 FetchContent_MakeAvailable(simpleble)
 
 # Pure codec, no BLE dependency (offline tests link this)
-add_library(corsano_protocol STATIC src/protocol.cpp src/files.cpp)
+add_library(corsano_protocol STATIC src/protocol.cpp src/files.cpp src/catalog.cpp)
 add_library(corsano::protocol ALIAS corsano_protocol)
 target_include_directories(corsano_protocol PUBLIC include)
 target_compile_features(corsano_protocol PUBLIC cxx_std_20)

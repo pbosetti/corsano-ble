@@ -74,6 +74,15 @@ CSV for plotting:
 
     python examples/live_csv.py ADDR | complot hr --aes "x=t y=hr,avg_hr" -   # --realtime for pings
 
+Command names and readable replies (for raw `b.command(id, payload)` use):
+
+```python
+corsano.find_command("get-plan")                    # CommandInfo(id=150, ...)
+corsano.describe_reply(150, bytes.fromhex("07013c00"))
+# 'plan=typical-multicolor ppg2=32Hz ppg1=60'; "" if unknown
+[c.name for c in corsano.command_catalog()]
+```
+
 Caveats: callbacks run on the BLE backend thread (keep them short, guard
 shared state); exceptions in them are printed to stderr, not propagated.
 Methods on a closed `Bracelet` raise `ArgumentError`.

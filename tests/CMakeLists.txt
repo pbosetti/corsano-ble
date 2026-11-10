@@ -12,7 +12,7 @@ option(CORSANO_ONLINE_TESTS "Register tests that need a real bracelet" OFF)
 
 # MARK: - Offline
 
-add_executable(corsano_tests test_protocol.cpp test_files.cpp)
+add_executable(corsano_tests test_protocol.cpp test_files.cpp test_catalog.cpp)
 target_link_libraries(corsano_tests PRIVATE corsano_protocol Catch2::Catch2WithMain)
 target_compile_definitions(corsano_tests PRIVATE CORSANO_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 catch_discover_tests(corsano_tests)

@@ -183,6 +183,29 @@ int main(void) {
   corsano_monitor_free(mon);
   corsano_monitor_free(NULL);
 
+  /* Command catalog */
+  size_t ncmd = 0;
+  assert(corsano_command_catalog(&ncmd) != NULL && ncmd > 40);
+  const corsano_command_info_t *ci = corsano_find_command_by_name("get_PLAN");
+  assert(ci != NULL && ci->id == 150 && !ci->is_set);
+  assert(corsano_find_command_by_name("nonsense") == NULL);
+  assert(corsano_find_command_by_name(NULL) == NULL);
+  assert(corsano_find_command_by_id(3) == NULL);
+  assert(corsano_find_command_by_id(150) == ci);
+  {
+    const uint8_t plan[] = {0x07, 0x01, 0x3c, 0x00};
+    char text[64];
+    const char *want = "plan=typical-multicolor ppg2=32Hz ppg1=60";
+    assert(corsano_describe_reply(150, plan, 4, text, sizeof text) ==
+           strlen(want));
+    assert(strcmp(text, want) == 0);
+    assert(corsano_describe_reply(150, plan, 4, NULL, 0) == strlen(want));
+    assert(corsano_describe_reply(150, plan, 4, text, 5) == strlen(want));
+    assert(strcmp(text, "plan") == 0);
+    assert(corsano_describe_reply(3, plan, 4, text, sizeof text) == 0);
+    assert(corsano_describe_reply(150, NULL, 0, text, sizeof text) == 0);
+  }
+
   corsano_free(NULL);
   puts("ok");
   return 0;

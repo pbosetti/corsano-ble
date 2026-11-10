@@ -4,6 +4,8 @@
 #include "corsano/files.hpp"
 #include "corsano/monitor.hpp"
 
+// -x arguments contain commas (set-sampling:spo2,60): do not split them
+#define CXXOPTS_VECTOR_DELIMITER '\x1f'
 #include <cxxopts.hpp>
 
 #include <algorithm>
@@ -14,6 +16,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -809,36 +812,221 @@ int cmd_follow(const cxxopts::ParseResult &args) {
   return 0;
 }
 
-// Debug/reverse-engineering aid: each --send ID[:HEX] is sent in order and
-// its response payload printed as hex
-int cmd_raw(const cxxopts::ParseResult &args) {
-  if (!args.count("send"))
-    throw std::runtime_error("raw needs at least one --send ID[:HEX]");
-  // Parse everything before connecting, so typos fail fast
-  std::vector<std::pair<int, std::vector<uint8_t>>> requests;
-  for (auto &s : args["send"].as<std::vector<std::string>>()) {
-    auto colon = s.find(':');
-    int id = std::stoi(s.substr(0, colon));
-    std::string hex = colon == std::string::npos ? "" : s.substr(colon + 1);
-    if (id < 0 || id > 255 || hex.size() % 2)
-      throw std::runtime_error("bad --send " + s +
-                               " (want ID[:HEX], e.g. 223:05)");
-    std::vector<uint8_t> payload;
-    for (size_t i = 0; i < hex.size(); i += 2)
-      payload.push_back(uint8_t(std::stoi(hex.substr(i, 2), nullptr, 16)));
-    requests.emplace_back(id, std::move(payload));
+// MARK: - Raw
+
+// CSV field, quoted if it holds a comma or quote
+std::string csv_field(const std::string &s) {
+  if (s.find_first_of(",\"\n") == std::string::npos)
+    return s;
+  std::string out = "\"";
+  for (char c : s)
+    out += c == '"' ? std::string("\"\"") : std::string(1, c);
+  return out + "\"";
+}
+
+std::string hex_string(std::span<const uint8_t> v) {
+  std::string out;
+  for (uint8_t x : v)
+    out += fmt("%02x", x);
+  return out;
+}
+
+std::vector<uint8_t> parse_hex(const std::string &hex) {
+  bool ok = hex.size() % 2 == 0;
+  for (char c : hex)
+    ok = ok && std::isxdigit((unsigned char)c);
+  if (!ok)
+    throw std::runtime_error("bad hex payload \"" + hex + "\"");
+  std::vector<uint8_t> out;
+  for (size_t i = 0; i < hex.size(); i += 2)
+    out.push_back(uint8_t(std::stoi(hex.substr(i, 2), nullptr, 16)));
+  return out;
+}
+
+std::vector<std::string> split(const std::string &s, char sep) {
+  std::vector<std::string> out;
+  std::stringstream ss(s);
+  for (std::string part; std::getline(ss, part, sep);)
+    out.push_back(part);
+  return out;
+}
+
+struct Vital {
+  const char *name;
+  uint8_t id;
+};
+constexpr Vital Vitals[] = {{"activity", 1},    {"pulse-rate", 2},
+                            {"respiration", 3}, {"spo2", 4},
+                            {"temperature", 5}, {"nibp", 9}};
+
+uint8_t parse_vital(const std::string &name) {
+  for (auto &v : Vitals)
+    if (name == v.name)
+      return v.id;
+  throw std::runtime_error("unknown vital: " + name +
+                           " (activity, pulse-rate, respiration, spo2, "
+                           "temperature, nibp)");
+}
+
+uint8_t parse_recording_value(const std::string &v) {
+  if (v == "off")
+    return 1;
+  if (v == "bedtime-risetime")
+    return 2;
+  if (v == "continuous")
+    return 3;
+  throw std::runtime_error("unknown recording value: " + v +
+                           " (off, bedtime-risetime, continuous)");
+}
+
+uint8_t parse_recording_type(const std::string &t) {
+  if (t == "stress-bioz")
+    return 1;
+  if (t == "acc")
+    return 2;
+  if (t == "temperature-raw")
+    return 4;
+  throw std::runtime_error("unknown recording: " + t +
+                           " (stress-bioz, acc, temperature-raw)");
+}
+
+// Local HH:MM -> GMT [hh, mm] with the host's UTC offset right now
+std::vector<uint8_t> local_to_gmt(const std::string &arg) {
+  int h = -1, m = -1;
+  char tail = 0;
+  if (std::sscanf(arg.c_str(), "%d:%d%c", &h, &m, &tail) != 2 || h < 0 ||
+      h > 23 || m < 0 || m > 59)
+    throw std::runtime_error("bad time \"" + arg + "\" (want HH:MM, local)");
+  std::time_t now = std::time(nullptr);
+  std::tm l = *std::localtime(&now), g = *std::gmtime(&now);
+  int day = l.tm_yday - g.tm_yday;
+  if (day > 1)
+    day = -1; // year wrap
+  if (day < -1)
+    day = 1;
+  int offset = day * 1440 + (l.tm_hour - g.tm_hour) * 60 + l.tm_min - g.tm_min;
+  int gmt = ((h * 60 + m - offset) % 1440 + 1440) % 1440;
+  return {uint8_t(gmt / 60), uint8_t(gmt % 60)};
+}
+
+// Readable argument of a few commands, else plain hex. CLI-only sugar.
+std::vector<uint8_t> parse_raw_args(uint8_t id, const std::string &arg) {
+  if (arg.empty())
+    return {};
+  auto parts = split(arg, ',');
+  switch (id) {
+  case 149: // set-plan
+    for (auto &p : PlanNames)
+      if (arg == p.name)
+        return {uint8_t(p.plan), uint8_t(Corsano::Ppg2Rate::Hz32), 60};
+    if (std::isalpha((unsigned char)arg[0]) && arg.size() > 2 &&
+        !std::isxdigit((unsigned char)arg[2]))
+      parse_plan(arg); // throws with the list of names
+    break;
+  case 234: // set-sampling
+    if (parts.size() == 2) {
+      int sec = std::stoi(parts[1]);
+      if (sec < 0 || sec > 65535)
+        throw std::runtime_error("bad interval: " + parts[1]);
+      return {parse_vital(parts[0]), uint8_t(sec & 0xFF), uint8_t(sec >> 8)};
+    }
+    break;
+  case 235: // get-sampling
+    if (!std::isxdigit((unsigned char)arg[0]) || arg.size() > 2)
+      return {parse_vital(arg)};
+    break;
+  case 40:
+  case 41: // set-bedtime, set-risetime
+    if (arg.find(':') != std::string::npos)
+      return local_to_gmt(arg);
+    break;
+  case 192: // set-recording
+    if (parts.size() == 2) {
+      uint8_t type = parse_recording_type(parts[0]);
+      uint8_t v = parse_recording_value(parts[1]);
+      if (type == 1)
+        return {type, v, v};
+      return {type, v};
+    }
+    break;
+  case 193: // get-recording
+    if (std::isalpha((unsigned char)arg[0]) && arg.size() > 2)
+      return {parse_recording_type(arg)};
+    break;
+  case 220: // set-realtime
+    if (arg == "on" || arg == "off")
+      return {uint8_t(arg == "on")};
+    break;
+  case 46: // get-file-size
+    for (auto &f : HistoryFiles)
+      if (arg == f.name)
+        return {uint8_t(f.id)};
+    break;
+  default:
+    break;
   }
-  auto hex = [](const std::vector<uint8_t> &v) {
-    std::string out;
-    for (uint8_t x : v)
-      out += fmt("%02x", x);
-    return out;
-  };
+  return parse_hex(arg);
+}
+
+// NAME or number, optionally followed by :ARGS
+std::pair<uint8_t, std::vector<uint8_t>> parse_raw_spec(const std::string &s) {
+  auto colon = s.find(':');
+  std::string head = s.substr(0, colon);
+  std::string arg = colon == std::string::npos ? "" : s.substr(colon + 1);
+  int id = -1;
+  if (!head.empty() && std::all_of(head.begin(), head.end(), [](char c) {
+        return std::isdigit((unsigned char)c);
+      })) {
+    id = std::stoi(head);
+  } else if (auto *c = Corsano::find_command(head)) {
+    id = c->id;
+  } else {
+    std::string close;
+    for (auto &c : Corsano::command_catalog())
+      if (!head.empty() &&
+          (std::string_view(c.name).find(head) != std::string_view::npos ||
+           head.find(c.name) != std::string::npos))
+        close += std::string(close.empty() ? "" : ", ") + c.name;
+    throw std::runtime_error(
+        "unknown command \"" + head + "\"" +
+        (close.empty() ? "" : " (did you mean: " + close + "?)") +
+        "; see `raw --list`");
+  }
+  if (id > 255)
+    throw std::runtime_error("bad command id " + head + " (0..255)");
+  try {
+    return {uint8_t(id), parse_raw_args(uint8_t(id), arg)};
+  } catch (const std::logic_error &e) { // stoi
+    throw std::runtime_error("bad argument in -x " + s);
+  }
+}
+
+// Debug/reverse-engineering aid: each -x NAME|ID[:ARGS] is sent in order and
+// its response payload printed as hex and decoded
+int cmd_raw(const cxxopts::ParseResult &args) {
+  if (args.count("list")) {
+    write_out("id,name,set,description\n");
+    for (auto &c : Corsano::command_catalog())
+      write_out(fmt("%u,%s,%s,%s\n", c.id, c.name, c.is_set ? "yes" : "no",
+                    csv_field(c.description).c_str()));
+    return 0;
+  }
+  if (!args.count("send"))
+    throw std::runtime_error("raw needs at least one -x NAME|ID[:ARGS] "
+                             "(or --list)");
+  // Parse everything before connecting, so typos fail fast
+  std::vector<std::pair<uint8_t, std::vector<uint8_t>>> requests;
+  for (auto &s : args["send"].as<std::vector<std::string>>())
+    requests.push_back(parse_raw_spec(s));
   auto b = connect(args);
-  write_out("id,request,response\n");
-  for (auto &[id, payload] : requests)
-    write_out(fmt("%d,%s,%s\n", id, hex(payload).c_str(),
-                  hex(b.command(uint8_t(id), payload)).c_str()));
+  write_out("id,name,request,response,decoded\n");
+  for (auto &[id, payload] : requests) {
+    auto response = b.command(id, payload);
+    auto *info = Corsano::find_command(id);
+    write_out(fmt("%u,%s,%s,%s,%s\n", id, info ? info->name : "",
+                  hex_string(payload).c_str(), hex_string(response).c_str(),
+                  csv_field(Corsano::describe_reply(id, response)).c_str()));
+  }
   b.disconnect();
   return 0;
 }
@@ -867,7 +1055,7 @@ int main(int argc, char **argv) {
     ("max-bytes", "history: max bytes to download", cxxopts::value<uint32_t>()->default_value("38000"))
     ("file", "history: ppg, activity, hrv, workout, sleep, logs, ppg2, ecg, bioz, greenteg, stress or acc", cxxopts::value<std::string>()->default_value("activity"))
     ("raw", "history: also write the downloaded bytes to FILE (required for files without decoder)", cxxopts::value<std::string>())
-    ("x,send", "raw: command ID[:HEX payload], repeatable (e.g. -x 223:05 -x 224)", cxxopts::value<std::vector<std::string>>())
+    ("x,send", "raw: command NAME|ID[:ARGS], repeatable (e.g. -x get-plan -x 223:05)", cxxopts::value<std::vector<std::string>>())
     ("erase", "history: erase downloaded records from the bracelet (decoded files only)")
     ("files", "follow: comma-separated files to poll (decoded: activity, stress, ppg, bioz, acc; others need --raw-dir)", cxxopts::value<std::string>()->default_value("activity,stress,bioz"))
     ("interval", "follow: seconds per polling pass (default 0 = back-to-back)", cxxopts::value<double>()->default_value("0"))
@@ -885,6 +1073,7 @@ int main(int argc, char **argv) {
     ("timeout", "calibrate: give up after S seconds", cxxopts::value<double>()->default_value("360"))
     ("ppg2-rate", "plan: with --set, raw PPG2 rate in Hz (32, 64, 128, 256, 512)", cxxopts::value<int>())
     ("raw-dir", "follow: append undecoded files to DIR/<name>.bin", cxxopts::value<std::string>())
+    ("list", "raw: print the known commands as CSV (no bracelet needed)")
     ("h,help", "Show help");
   // clang-format on
   options.parse_positional({"command"});

@@ -14,7 +14,7 @@ cmake -B build -G Ninja && cmake --build build --target corsano-cli
 ## Commands
 
 ```sh
-corsano-cli scan [-d 5]                       # name,address,rssi
+corsano-cli scan [-d S]                       # name,address,rssi as found, until Ctrl-C
 corsano-cli info -a ADDR                      # key,value incl. plan  (-n NAME instead of -a ADDR works everywhere)
 corsano-cli live -a ADDR [--set-time] [--duration S]   # LiveHrm every 2 s: t,hr,hr_q,steps,energy,avg_hr,battery
 corsano-cli live -a ADDR --realtime [-p 1] [--sampling S]  # RealtimePing: t,device_t,hr,...,spo2,...

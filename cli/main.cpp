@@ -339,12 +339,22 @@ std::string profile_path(const cxxopts::ParseResult &args) {
 }
 
 int cmd_scan(const cxxopts::ParseResult &args) {
-  auto secs = args["duration"].as<double>();
-  std::cerr << "scanning " << secs << " s...\n";
-  auto devices = Bracelet::scan(std::chrono::milliseconds(int(secs * 1000)));
+  auto secs = args.count("duration") ? args["duration"].as<double>() : 0.0;
+  std::signal(SIGINT, on_signal);
+  std::signal(SIGTERM, on_signal);
+  std::cerr << "scanning, Ctrl-C to stop\n";
   write_out("name,address,rssi\n");
-  for (auto &d : devices)
-    write_out(fmt("%s,%s,%d\n", d.name.c_str(), d.address.c_str(), d.rssi));
+  auto end = std::chrono::steady_clock::now() +
+             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                 std::chrono::duration<double>(secs));
+  Bracelet::scan(
+      [](const Corsano::DeviceInfo &d) {
+        write_out(
+            fmt("%s,%s,%d\n", d.name.c_str(), d.address.c_str(), d.rssi));
+      },
+      [&] {
+        return g_stop || (secs > 0 && std::chrono::steady_clock::now() >= end);
+      });
   return 0;
 }
 
@@ -1047,7 +1057,7 @@ int main(int argc, char **argv) {
     ("command", "scan, info, live, history, follow, plan, profile, calibrate or raw", cxxopts::value<std::string>())
     ("a,address", "Device address (MAC on Linux, UUID on macOS); if neither -a nor -n is given, $CORSANO_ADDR (address or name) is used", cxxopts::value<std::string>())
     ("n,name", "Device name as shown by `scan` (alternative to -a)", cxxopts::value<std::string>())
-    ("d,duration", "scan: seconds to scan (default 5); live/follow: stop after N seconds", cxxopts::value<double>())
+    ("d,duration", "scan/live/follow: stop after N seconds (default: until Ctrl-C)", cxxopts::value<double>())
     ("p,period", "live: ping period in seconds", cxxopts::value<double>()->default_value("1"))
     ("sampling", "live: vital sampling interval in seconds (pulse rate, SpO2)", cxxopts::value<double>())
     ("set-time", "live: set the bracelet clock first")
@@ -1098,14 +1108,8 @@ int main(int argc, char **argv) {
       return args.count("help") ? 0 : 1;
     }
     auto cmd = args["command"].as<std::string>();
-    if (cmd == "scan") {
-      // scan has its own default for --duration
-      if (!args.count("duration")) {
-        const char *a[] = {argv[0], "scan", "-d", "5"};
-        return cmd_scan(options.parse(4, a));
-      }
+    if (cmd == "scan")
       return cmd_scan(args);
-    }
     if (cmd == "info")
       return cmd_info(args);
     if (cmd == "live")

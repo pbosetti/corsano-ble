@@ -71,6 +71,13 @@ public:
   /// @throws std::runtime_error if no Bluetooth adapter is found.
   static std::vector<DeviceInfo>
   scan(std::chrono::milliseconds duration = std::chrono::seconds(5));
+  /// @brief Scan until @p stop returns true, reporting each bracelet once as found.
+  /// @param on_found Called on the BLE backend thread, once per address; calls
+  ///                 are serialized and none happen after scan() returns.
+  /// @param stop     Polled every 100 ms on the calling thread.
+  /// @throws std::runtime_error if no Bluetooth adapter is found.
+  static void scan(const std::function<void(const DeviceInfo &)> &on_found,
+                   const std::function<bool()> &stop);
   /// @}
 
   // MARK: - Lifecycle

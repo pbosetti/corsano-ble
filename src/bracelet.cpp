@@ -18,6 +18,7 @@
 #include <ctime>
 #include <mutex>
 #include <optional>
+#include <thread>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -383,18 +384,47 @@ std::vector<uint8_t> Bracelet::Impl::download(FileId file, uint32_t max_bytes,
 
 // MARK: - Discovery
 
-std::vector<DeviceInfo> Bracelet::scan(std::chrono::milliseconds duration) {
+void Bracelet::scan(const std::function<void(const DeviceInfo &)> &on_found,
+                    const std::function<bool()> &stop) {
+  // shared: the backend may still hold the callback after we return
+  struct ScanState {
+    std::mutex m;
+    bool active = true;
+    std::vector<std::string> seen;
+    std::function<void(const DeviceInfo &)> on_found;
+  };
+  auto state = std::make_shared<ScanState>();
+  state->on_found = on_found;
+
   auto adapter = first_adapter();
-  adapter.scan_for(int(duration.count()));
-  std::vector<DeviceInfo> out;
-  for (auto &p : adapter.scan_get_results()) {
-    for (auto &s : p.services()) {
-      if (lower(s.uuid()) == ServiceUuid) {
-        out.push_back({p.identifier(), p.address(), p.rssi()});
-        break;
-      }
-    }
-  }
+  adapter.set_callback_on_scan_found([state](SimpleBLE::Peripheral p) {
+    auto services = p.services();
+    if (std::none_of(services.begin(), services.end(), [](auto &s) {
+          return lower(s.uuid()) == ServiceUuid;
+        }))
+      return;
+    std::lock_guard lock(state->m);
+    auto addr = p.address();
+    if (!state->active ||
+        std::find(state->seen.begin(), state->seen.end(), addr) !=
+            state->seen.end())
+      return;
+    state->seen.push_back(addr);
+    state->on_found({p.identifier(), addr, p.rssi()});
+  });
+  adapter.scan_start();
+  while (!stop())
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  adapter.scan_stop();
+  std::lock_guard lock(state->m);
+  state->active = false;
+}
+
+std::vector<DeviceInfo> Bracelet::scan(std::chrono::milliseconds duration) {
+  std::vector<DeviceInfo> out; // no lock needed: on_found calls are serialized
+  auto end = std::chrono::steady_clock::now() + duration;
+  scan([&](const DeviceInfo &d) { out.push_back(d); },
+       [&] { return std::chrono::steady_clock::now() >= end; });
   return out;
 }
 

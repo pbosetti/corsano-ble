@@ -49,7 +49,7 @@ The bracelet only accepts commands from a bonded host. The passkey is `999999`.
 | Path | Content |
 |---|---|
 | `include/corsano/protocol.hpp` | pure codec (`corsano::protocol` target, no BLE) |
-| `include/corsano/files.hpp` | recorded-file decoders: Activity, Stress, PPG, BioZ, accelerometer ([roadmap](docs/RAW_SIGNALS.md)) |
+| `include/corsano/files.hpp` | recorded-file decoders: Activity, Stress, PPG, BioZ, accelerometer, PPG2, ECG ([roadmap](docs/RAW_SIGNALS.md)) |
 | `include/corsano/monitor.hpp` | `Corsano::Monitor`: background polling, tidy `Sample` queue, `poll()`/`wait()` |
 | `include/corsano/bracelet.hpp` | `Corsano::Bracelet` (`corsano::corsano` target) |
 | `include/corsano/corsano.h` | C17 API (`corsano_c` shared lib: `libcorsano_c.dylib` / `.so`) |

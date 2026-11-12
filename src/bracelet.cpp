@@ -147,6 +147,7 @@ struct Bracelet::Impl {
   bool pairing_required = false;
   bool disconnected = true;
   bool download_active = false;
+  bool download_cancelled = false; // sticky until the next connect()
   std::vector<uint8_t> download_buffer;
   Clock::time_point last_tx;
   NotificationCallback notification_cb;
@@ -233,6 +234,7 @@ void Bracelet::Impl::connect(std::chrono::milliseconds scan_timeout) {
   {
     std::lock_guard lock(mutex);
     disconnected = false;
+    download_cancelled = false;
   }
   peripheral->set_callback_on_disconnected([this] {
     DisconnectCallback cb;
@@ -365,6 +367,8 @@ std::vector<uint8_t> Bracelet::Impl::download(FileId file, uint32_t max_bytes,
   while (download_buffer.size() < n) {
     if (disconnected)
       throw std::runtime_error("disconnected");
+    if (download_cancelled)
+      throw std::runtime_error("download cancelled");
     if (Clock::now() - last_tx >= DefaultTimeout)
       throw Timeout("file download stalled after " +
                     std::to_string(download_buffer.size()) + " of " +
@@ -397,7 +401,9 @@ void Bracelet::scan(const std::function<void(const DeviceInfo &)> &on_found,
   state->on_found = on_found;
 
   auto adapter = first_adapter();
-  adapter.set_callback_on_scan_found([state](SimpleBLE::Peripheral p) {
+  // The service UUID may only come with a later advertisement or scan
+  // response, so check updates too (seen dedupes)
+  auto check = [state](SimpleBLE::Peripheral p) {
     auto services = p.services();
     if (std::none_of(services.begin(), services.end(), [](auto &s) {
           return lower(s.uuid()) == ServiceUuid;
@@ -411,7 +417,9 @@ void Bracelet::scan(const std::function<void(const DeviceInfo &)> &on_found,
       return;
     state->seen.push_back(addr);
     state->on_found({p.identifier(), addr, p.rssi()});
-  });
+  };
+  adapter.set_callback_on_scan_found(check);
+  adapter.set_callback_on_scan_updated(check);
   adapter.scan_start();
   while (!stop())
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -634,6 +642,12 @@ uint32_t Bracelet::file_size(FileId file) {
 std::vector<uint8_t> Bracelet::download_file(FileId file, uint32_t max_bytes,
                                              ProgressCallback progress) {
   return _impl->download(file, max_bytes, std::move(progress));
+}
+
+void Bracelet::cancel_download() {
+  std::lock_guard lock(_impl->mutex);
+  _impl->download_cancelled = true;
+  _impl->cv.notify_all();
 }
 
 void Bracelet::erase_file(FileId file, uint32_t bytes) {

@@ -73,6 +73,8 @@ enum class CommandId : uint8_t {
   EraseAllFiles = 21,                 ///< Erase every recorded file.
   UpdateTime = 22,                    ///< Set the bracelet clock, see encode_set_time().
   ResetWatch = 24,                    ///< Reset the bracelet.
+  StartMeasurement = 34,              ///< Start an on-demand measurement; payload 2 = ECG.
+  StopMeasurement = 35,               ///< Stop an on-demand measurement; same payload.
   SetHeight = 42,                     ///< Set the user height.
   SetWeight = 43,                     ///< Set the user weight.
   SetProfile = 44,                    ///< Set the user profile, see encode_user_profile().
@@ -122,8 +124,8 @@ enum class FileId : uint8_t {
   Workout = 4,   ///< Workout data (no decoder).
   Sleep = 5,     ///< Sleep data (no decoder).
   Logs = 6,      ///< Device logs (no decoder).
-  Ppg2 = 9,      ///< Second raw PPG file (no decoder).
-  Ecg = 13,      ///< ECG (no decoder).
+  Ppg2 = 9,      ///< Multicolour raw PPG, see decode_ppg2().
+  Ecg = 13,      ///< ECG, see decode_ecg().
   Bioz = 14,     ///< Bioimpedance, see decode_bioz().
   Greenteg = 18, ///< Greenteg sensor data (no decoder).
   Stress = 21,   ///< Stress, see decode_stress().

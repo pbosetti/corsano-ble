@@ -273,9 +273,14 @@ public:
   /// @param progress Optional progress callback.
   /// @return The raw bytes.
   /// @throws Timeout if the download stalls.
-  /// @throws std::runtime_error if disconnected during the download.
+  /// @throws std::runtime_error if disconnected or cancel_download() is called.
   std::vector<uint8_t> download_file(FileId file, uint32_t max_bytes,
                                      ProgressCallback progress = {});
+  /// @brief Abort download_file(), from any thread.
+  ///
+  /// The running download and any later one throw std::runtime_error until
+  /// the next connect(). Commands are not affected, so cleanup still works.
+  void cancel_download();
   /// @brief Free the first @p bytes of the file.
   /// @param file File to erase from.
   /// @param bytes Bytes to free (use Decoded::consumed_bytes).

@@ -318,48 +318,82 @@ therefore overwrite sampling rates set by this library.
 - GetBraceletStatus (156): `wearing, mode, battery %, charging state,
   idle, (skip), wearing quality`.
 
-## OHR files (BioZ, accelerometer, PPG2)
+## OHR files (BioZ, accelerometer, PPG2, ECG)
 
-Files `Bioz` (14), `Acc` (22) and `Ppg2` (9) share one framing. Documented by
-Corsano (developer.corsano.com, android/data_models/raw_files); layouts below
-verified on real recordings (FW 8.x, B2). Little endian, no CRC.
+Files `Bioz` (14), `Acc` (22), `Ppg2` (9) and `Ecg` (13) share one framing,
+which Corsano calls WIFF (`.wiff`). Documented by Corsano (developer.corsano.com,
+android/data_models/raw_files) and by their reference Python parser
+(`mmt_parse_wiff_v2.py`, v2.1, licensed, not in this repo). Our decoders match that
+parser value for value and timestamp for timestamp on real BioZ, Acc and PPG2
+recordings (FW 8.x, B2). Little endian, no CRC.
 
 Record: `"OHR"` (4F 48 52), `len:u16`, `id:u8`, payload of `len-1` bytes;
 total size `5 + len`.
 
-| Id | Meaning |
-|---|---|
-| 0x0A | header: time/size; payload offset 12..15 = `u32` start time (epoch s) |
-| 0x0B | version |
-| 0x0C | host version |
-| 0x0F | body: one channel chunk |
+| Id | Meaning | Payload |
+|---|---|---|
+| 0x0A | file header | 12 reserved, `start:u32` (epoch s), 1 reserved |
+| 0x0B | device info | 7 reserved, firmware `u8 x4`, device name 12 chars (e.g. `MMT287-2B   `), 2 reserved |
+| 0x0C | measurement info | 3 reserved, HW id `u16`, MID `u16`, serial 8 bytes, 4 unused, `FF 00`, start/stop `u8` |
+| 0x0F | body | one or more metric chunks |
 
-Channel chunk (payload of a body record):
-`channel:u8, clen:u16, index:u8, quality:u8`, then for data channels
-`body_position:u8, format:u8, samples (clen-4 bytes)`. Time channel 0x1E has
-no body_position/format: `1E, 06 00, index, quality, timestamp:u32` (epoch s).
+Metric chunk: `metric:u8, clen:u16`, then `clen` bytes starting with
+`index:u8, quality:u8`. Data metrics continue with `body_position:u8, format:u8`.
 
-| Channel | Signal | Format | Samples |
+| Metric | Signal | Format | Rest of the chunk |
 |---|---|---|---|
-| 0x3D | BioZ | 0x01 = 25 Hz | 24-bit unsigned, `(clen-4)/3` (25 per chunk) |
-| 0x2B | Acc | 0x6E = 32 Hz | int16 x,y,z, `(clen-4)/6` (32 per chunk) |
+| 0x1E | time | – | `timestamp:u32` (epoch s); `clen` = 6 |
+| 0x3D | BioZ | 0x01 = 25 Hz | `(clen-4)/3` samples, u24 |
+| 0x3D | BioZ, ADC variant (`clen >= 154`) | 0x01 | `(clen-4)/6` samples, each u24 raw then i24 ADC |
+| 0x2B | Acc | 0x6E = 32 Hz | 32 samples, i16 x, y, z |
+| 121..127 | PPG2 (metric = colour) | 0x60..0x64 = 32/64/128/256/512 Hz | `led_pd_pos, offset, exp, led u8 x4, gain u8 x4`, then `rate` samples u16 |
+| 0x64 | ECG | 0x01 | `count:u8, time:u32` (epoch s), `ms:u16`, then `count` samples u24 |
 
-Deviations from Corsano's doc:
-- BioZ is channel **0x3D** on FW 8.x, the doc says 0x3E (the decoder accepts both).
-- The time channel 0x1E is undocumented.
-- Acc scale is about **512 counts/g** at rest (z about -514); unverified.
+Values (Corsano's reference scaling):
+- **PPG2:** sample i of a chunk at rate r uses quarter `q = 4i/r`; value =
+  `raw + gain[q]*32768 - 16384` (19 bit). Then, per channel (metric,
+  led_pd_pos), a jump of 32768 ± 1000 from the previous value is undone (only
+  while the previous value is > 0). A gain step of exactly 1 is therefore
+  folded back as well. A channel is the pair (metric, led_pd_pos); on the 287-2B
+  with plan 7 at 128 Hz: 126/0x06, 124/0xB6, 123/0x16.
+- **ECG:** a raw value above 0x3FFFFF repeats the previous one. µV =
+  `v>0x20000 ? -(0x3FFFF-v) : v`, negated, folded again the same way, then
+  `v * 1000 / 0x20000 / 15 * 1000`, truncated. 256 Hz (documented, not verified
+  against a recording yet).
+- **BioZ:** `normalized = ((v >= 0x80000 ? 0x80000 - v : v) / 0x80000 + 1) / 2`,
+  0..1, unit undocumented.
+- **Acc:** about **512 counts/g** at rest (z about -514); unverified.
 
-Timestamps: each chunk is 1 s. On FW 8.12 every data chunk is **followed** by
-its 0x1E record (`chunk, time, chunk, time, …`), so a 0x1E timestamp belongs to
-the chunk(s) **before** it. If several chunks precede one time record, they are
-1 s apart, ending at that time. Chunks after the last time record are
-extrapolated from it (or from the 0x0A start time); with no time info at all
-they get 0. This matters after an erase: each poll's download starts with a
-data chunk. Chunks of all `0xFF` are erased flash and are skipped.
+Deviations from Corsano's web doc:
+- BioZ is metric **0x3D** on FW 8.x, the doc says 0x3E (the decoder accepts both).
+- The time metric 0x1E is not in the web doc.
+
+Timestamps (as in the reference parser): each channel (BioZ; Acc; each PPG2
+pair) runs a clock that starts at the 0x0A start time and advances by the
+chunk duration (1 s; BioZ `samples / 25` s). A 0x0A record resyncs every clock
+that is more than 6 s off. A 0x1E record does the same with a tolerance of 1 s
+for Acc and 6 s otherwise. Time records jitter by whole seconds (BioZ:
+`101, 101, 103, 104, 104` for consecutive chunks), so following each one
+exactly would give duplicate or uneven timestamps. The order varies: PPG2
+writes 0x1E before its chunks, Acc and BioZ after.
+
+Our extension: chunks seen before any time info, as at the start of a download
+after an erase, are stamped back from the first 0x1E (the last of them gets
+its time, earlier ones one duration apart). A 0x0A that arrives first leaves
+them at 0. ECG chunks carry their own `time + ms`.
+
+Slice by slice (`OhrState`, used by `Monitor`/`follow` when erasing): a poll
+after catching up downloads only the last second or so, usually without a
+time record. The state carries the clocks and the PPG2 rollover from one
+slice to the next, and chunks seen before the session's first time record are
+held back (not consumed) until a later slice brings one.
 
 Splitting: scan for `"OHR"`; `len == 0` or `len > 4096` resyncs by 1 byte; a
-record that is not complete yet stops the scan (not consumed). A chunk whose
-`clen` overruns its record is skipped but the record is consumed.
+record that is not complete yet stops the scan (not consumed). A metric whose
+`clen` overruns its record drops the rest of that record, but the record is
+consumed. Unknown metrics, PPG2 chunks with an unknown format, and chunks
+shorter than their header are skipped. Chunks of all `0xFF` are erased flash
+and are skipped.
 
 ## Semantics from developer.corsano.com
 
@@ -388,8 +422,8 @@ pages. They complement the byte layouts above, which come from the SDK.
   has its own clock; all channels of a chunk start at the same time. The
   rollover correction is per pair.
 - **ECG** (B2): 256 Hz, 50 s per measurement (8 s warm-up + 42 s data). A blue
-  LED is on while it runs, and other metrics pause meanwhile. The SDK stores
-  it as `.wiff` parts; the byte format is not published.
+  LED is on while it runs, and other metrics pause meanwhile. Format: see
+  [OHR files](#ohr-files-bioz-accelerometer-ppg2-ecg).
 - **User profile:** "wrist is mandatory for every metric". Skin type is
   Fitzpatrick (1 very fair … 6 black-brown). Height and weight are used in
   the bracelet's calculations.
@@ -399,6 +433,7 @@ pages. They complement the byte layouts above, which come from the SDK.
 - **Reset (24):** the firmware does not always restore time, user profile
   and plan afterwards, so send them again.
 - **Raw `.wiff` parsing:** Corsano provides Python/PHP sample parsers on
-  request (corsano.com/contact-us).
+  request (corsano.com/contact-us); we have the Python one (v2.1), see
+  [OHR files](#ohr-files-bioz-accelerometer-ppg2-ecg).
 
-> To be asked to Corsano: the .wiff parsers for PPG2 and ECG (available on request), whether the bracelet binds to a single host id, and why the realtime ping arrives only once.
+> To be asked to Corsano: physical units for BioZ and PPG2, whether the bracelet binds to a single host id, and why the realtime ping arrives only once.

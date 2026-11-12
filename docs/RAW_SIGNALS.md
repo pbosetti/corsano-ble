@@ -7,30 +7,31 @@ download as raw bytes with `Bracelet::download_file()` and
 
 ## Where the formats are documented
 
-| Signal | FileId | Format known? | Source |
-|---|---|---|---|
-| PPG | 1 | **yes** | decoder in the BLE SDK (`PpgFileTransferRequest`); spec in [PROTOCOL.md](PROTOCOL.md#ppg-file) |
-| ECG | 13 | no | |
-| BioZ | 14 | no | |
-| Accelerometer | 22 | no | |
-| PPG2 | 9 | no | |
+| Signal | FileId | Decoder | Source | Open |
+|---|---|---|---|---|
+| PPG | 1 | `decode_ppg` | BLE SDK (`PpgFileTransferRequest`); [PROTOCOL.md](PROTOCOL.md#ppg-file) | – |
+| ECG | 13 | `decode_ecg` | Corsano's WIFF parser; [PROTOCOL.md](PROTOCOL.md#ohr-files-bioz-accelerometer-ppg2-ecg) | no real recording tested yet; 256 Hz unverified |
+| BioZ | 14 | `decode_bioz` | same | unit of `normalized`; ADC variant not seen in a recording |
+| Accelerometer | 22 | `decode_acc` | same | 512 counts/g unverified |
+| PPG2 | 9 | `decode_ppg2` | same | which colour each metric 121..127 is; physical unit |
 
-For the four unknown formats, the BLE SDK returns the bytes unparsed. The
-`data` SDK (`com.corsano.sdk:data`, also decompiled) doesn't decode them
-either. It saves them as `.wiff` chunk files, merges them and hands them on,
-presumably to the Corsano cloud (`api.health.cloud.corsano.com`). Its only
-native code, `libfxc.so`, is Philips' sleep-metrics engine, not a WIFF
-parser. **Nothing on the phone side knows these formats.**
+ECG, BioZ, accelerometer and PPG2 are WIFF files. The phone SDKs only store
+and forward them, but Corsano's reference Python parser (`mmt_parse_wiff_v2.py`
+v2.1, licensed, **do not commit**) decodes them. Our decoders reproduce its
+output exactly on the real BioZ, Acc and PPG2 dumps in `tests/data/`.
 
-## How to get the four unknown formats
+## What is left
 
-**1. Ask Corsano first.** You hold an SDK license. Ask for the `.wiff`
-specification, or at least for the ECG, BioZ, accelerometer and PPG2 file
-layouts. It is the cheapest route and the only one that gives authoritative
-scaling (µV, Ω, g).
+**1. Record an ECG** (`corsano-cli raw -n NAME -x start-measurement:ecg`, finger on the electrode for ~50 s, see
+below) and add the dump to `tests/data/`. Check the 256 Hz rate against the
+chunk times and the QRS spikes against the HR.
 
-**2. Otherwise, reverse engineer from recordings with known stimuli.** The
-recipe is the same for every signal:
+**2. Ask Corsano** for the physical units (BioZ in ohms, PPG2 counts) and the
+colour of each PPG2 metric id.
+
+**3. Reverse engineering** (kept for reference, and for files still without
+a decoder): use recordings with known stimuli. The recipe is the same for
+every signal:
 
 1. Start a recording (commands below), apply a known stimulus, then dump the
    file with `corsano-cli history --file <name> --raw <name>.bin`. Repeat

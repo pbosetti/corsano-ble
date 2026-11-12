@@ -56,7 +56,12 @@ std::string val_or_na(unsigned v, unsigned q) {
   return q == 0 ? "NA" : std::to_string(v);
 }
 
-void on_signal(int) { g_stop = true; }
+// Second Ctrl-C quits at once, skipping cleanup (e.g. workout mode stays on)
+void on_signal(int) {
+  if (g_stop)
+    std::_Exit(130);
+  g_stop = true;
+}
 
 // Sleeps until a signal arrives or `seconds` elapse (0 = forever)
 void wait_for_stop(double seconds) {
@@ -471,12 +476,12 @@ constexpr HistoryFile HistoryFiles[] = {
     {"workout", Corsano::FileId::Workout, false},
     {"sleep", Corsano::FileId::Sleep, false},
     {"logs", Corsano::FileId::Logs, false},
-    {"ppg2", Corsano::FileId::Ppg2, false},
-    {"ecg", Corsano::FileId::Ecg, false},
-    {"bioz", Corsano::FileId::Bioz, false},
+    {"ppg2", Corsano::FileId::Ppg2, true},
+    {"ecg", Corsano::FileId::Ecg, true},
+    {"bioz", Corsano::FileId::Bioz, true},
     {"greenteg", Corsano::FileId::Greenteg, false},
     {"stress", Corsano::FileId::Stress, true},
-    {"acc", Corsano::FileId::Acc, false},
+    {"acc", Corsano::FileId::Acc, true},
 };
 
 std::string activity_csv(const Corsano::Decoded<Corsano::ActivityRecord> &d) {
@@ -518,6 +523,54 @@ std::string ppg_csv(const Corsano::Decoded<Corsano::PpgChunk> &d) {
   return out;
 }
 
+std::string bioz_csv(const Corsano::Decoded<Corsano::BiozChunk> &d) {
+  std::string out = "t_ms,chunk,raw,normalized,adc\n";
+  for (auto &c : d.records)
+    for (size_t i = 0; i < c.samples.size(); ++i)
+      out += fmt("%llu,%u,%u,%.6f,%s\n",
+                 (unsigned long long)(c.timestamp_ms +
+                                      i * 1000 / Corsano::BiozSampleRateHz),
+                 c.index, c.samples[i], Corsano::bioz_normalized(c.samples[i]),
+                 c.adc.empty() ? "NA" : std::to_string(c.adc[i]).c_str());
+  return out;
+}
+
+std::string acc_csv(const Corsano::Decoded<Corsano::AccChunk> &d) {
+  std::string out = "t_ms,chunk,x,y,z\n";
+  for (auto &c : d.records)
+    for (size_t i = 0; i < c.samples.size(); ++i)
+      out += fmt("%llu,%u,%d,%d,%d\n",
+                 (unsigned long long)(c.timestamp_ms +
+                                      i * 1000 / Corsano::AccSampleRateHz),
+                 c.index, c.samples[i][0], c.samples[i][1], c.samples[i][2]);
+  return out;
+}
+
+std::string ppg2_csv(const Corsano::Decoded<Corsano::Ppg2Chunk> &d) {
+  std::string out = "t_ms,chunk,metric,led_pd_pos,quality,led,gain,value\n";
+  for (auto &c : d.records)
+    for (size_t i = 0; i < c.samples.size(); ++i) {
+      size_t q = i * 4 / c.sample_rate_hz;
+      out += fmt("%llu,%u,%u,%u,%u,%u,%u,%d\n",
+                 (unsigned long long)(c.timestamp_ms +
+                                      i * 1000 / c.sample_rate_hz),
+                 c.index, c.metric_id, c.led_pd_pos, c.quality, c.led[q],
+                 c.gain[q], c.samples[i]);
+    }
+  return out;
+}
+
+std::string ecg_csv(const Corsano::Decoded<Corsano::EcgChunk> &d) {
+  std::string out = "t_ms,chunk,raw,uv\n";
+  for (auto &c : d.records)
+    for (size_t i = 0; i < c.samples.size(); ++i)
+      out += fmt("%llu,%u,%u,%d\n",
+                 (unsigned long long)(c.timestamp_ms +
+                                      i * 1000 / Corsano::EcgSampleRateHz),
+                 c.index, c.samples[i], Corsano::ecg_microvolts(c.samples[i]));
+  return out;
+}
+
 int cmd_history(const cxxopts::ParseResult &args) {
   auto name = args["file"].as<std::string>();
   const HistoryFile *file = nullptr;
@@ -556,6 +609,22 @@ int cmd_history(const cxxopts::ParseResult &args) {
     if (file->id == Corsano::FileId::Ppg) {
       auto d = Corsano::decode_ppg(data);
       write_out(ppg_csv(d));
+      consumed = d.consumed_bytes, count = d.records.size();
+    } else if (file->id == Corsano::FileId::Bioz) {
+      auto d = Corsano::decode_bioz(data);
+      write_out(bioz_csv(d));
+      consumed = d.consumed_bytes, count = d.records.size();
+    } else if (file->id == Corsano::FileId::Acc) {
+      auto d = Corsano::decode_acc(data);
+      write_out(acc_csv(d));
+      consumed = d.consumed_bytes, count = d.records.size();
+    } else if (file->id == Corsano::FileId::Ppg2) {
+      auto d = Corsano::decode_ppg2(data);
+      write_out(ppg2_csv(d));
+      consumed = d.consumed_bytes, count = d.records.size();
+    } else if (file->id == Corsano::FileId::Ecg) {
+      auto d = Corsano::decode_ecg(data);
+      write_out(ecg_csv(d));
       consumed = d.consumed_bytes, count = d.records.size();
     } else if (file->id == Corsano::FileId::Stress) {
       auto d = Corsano::decode_stress(data);
@@ -748,9 +817,7 @@ int cmd_follow(const cxxopts::ParseResult &args) {
         hf = &f;
     if (!hf)
       throw std::runtime_error("unknown file: " + name);
-    bool monitor_decodes = hf->decoded || hf->id == Corsano::FileId::Bioz ||
-                           hf->id == Corsano::FileId::Acc;
-    if (!monitor_decodes) {
+    if (!hf->decoded) {
       if (raw_dir.empty())
         throw std::runtime_error(name +
                                  " has no decoder: add --raw-dir DIR "
@@ -964,6 +1031,11 @@ std::vector<uint8_t> parse_raw_args(uint8_t id, const std::string &arg) {
     if (std::isalpha((unsigned char)arg[0]) && arg.size() > 2)
       return {parse_recording_type(arg)};
     break;
+  case 34:
+  case 35: // start-measurement, stop-measurement
+    if (arg == "ecg")
+      return {2};
+    break;
   case 220: // set-realtime
     if (arg == "on" || arg == "off")
       return {uint8_t(arg == "on")};
@@ -1068,7 +1140,7 @@ int main(int argc, char **argv) {
     ("raw", "history: also write the downloaded bytes to FILE (required for files without decoder)", cxxopts::value<std::string>())
     ("x,send", "raw: command NAME|ID[:ARGS], repeatable (e.g. -x get-plan -x 223:05)", cxxopts::value<std::vector<std::string>>())
     ("erase", "history: erase downloaded records from the bracelet (decoded files only)")
-    ("files", "follow: comma-separated files to poll (decoded: activity, stress, ppg, bioz, acc; others need --raw-dir)", cxxopts::value<std::string>()->default_value("activity,stress,bioz"))
+    ("files", "follow: comma-separated files to poll (decoded: activity, stress, ppg, bioz, acc, ppg2, ecg; others need --raw-dir)", cxxopts::value<std::string>()->default_value("activity,stress,bioz"))
     ("interval", "follow: seconds per polling pass (default 0 = back-to-back)", cxxopts::value<double>()->default_value("0"))
     ("keep", "follow: do NOT erase downloaded data; emit only newer records")
     ("hrm", "follow: add workout-mode LiveHrm (HR every 2 s); stops Activity logging while on")

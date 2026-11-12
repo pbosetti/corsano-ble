@@ -18,6 +18,10 @@
 >   nothing.** The period can't be changed (cmd 223 answers `1`).
 > - **Activity history (route 4): works.** One record per minute while worn
 >   (every 5 min otherwise), HR in each worn record.
+> - **No faster vitals from raw plans** (FW 8.12, 2026-11-12). Plan 5
+>   `hospital-raw` adds raw PPG2 (~950 B/s at 32 Hz) and acc, but Activity
+>   stays at 1/min and the PPG1 file (the one with 1 Hz HR estimates) stays
+>   empty. Cmd 34 `[1]` is accepted (`64`) but does not fill PPG1 either.
 > - **SpO2: rare but real.** None in 1235 Activity records over 4 days (SpO2
 >   sampling 1800 s). After sampling was set to 60 s, one record had SpO2 97 %
 >   (quality 1) with respiration 15.75/min (12:30, at rest). Setting 30 s

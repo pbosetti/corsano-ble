@@ -47,6 +47,8 @@ struct Sample {
 /// Fields (see cli/README.md for the full list):
 /// - `activity.*` (ActivityRecord), `stress.*` (StressRecord), `bioz.z`
 ///   (BiozChunk), `ppg.*` (PpgSample), `acc.x/y/z` (AccChunk),
+///   `ppg2.channel` + `ppg2.value` (Ppg2Chunk; channel = metric_id * 256 +
+///   led_pd_pos), `ecg.uv` (EcgChunk),
 ///   `hrm.*` (LiveHrm, live_hr only)
 /// - `status.connected` (0/1, on every change)
 /// - `status.dropped` (samples discarded because the queue was full)

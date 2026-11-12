@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 using namespace Corsano;
 using Catch::Approx;
@@ -515,34 +516,64 @@ TEST_CASE("decode_bioz synthetic", "[files][bioz]") {
   Bytes c1 = ohr_chunk(0x3D, 1, 1, bioz_samples(200));
   Bytes c2 = ohr_chunk(0x3D, 1, 2, bioz_samples(300));
 
-  SECTION("each time record stamps the chunk(s) before it (FW 8.12 order)") {
-    // c0 c1 c2 then time 2000: c2 = 2000 s, earlier ones 1 s apart
-    auto d = decode_bioz(concat({h, c0, c1, c2, t}));
+  SECTION("the header starts a clock that advances 1 s per chunk") {
+    auto d = decode_bioz(concat({h, c0, c1, c2}));
     REQUIRE(d.records.size() == 3);
-    CHECK(d.consumed_bytes ==
-          h.size() + t.size() + c0.size() + c1.size() + c2.size());
+    CHECK(d.consumed_bytes == h.size() + c0.size() + c1.size() + c2.size());
     for (size_t i = 0; i < 3; ++i) {
-      CHECK(d.records[i].timestamp_ms == 1998000 + 1000 * i);
+      CHECK(d.records[i].timestamp_ms == 1000000 + 1000 * i);
       CHECK(d.records[i].index == i);
       CHECK(d.records[i].quality == 4);
       CHECK(d.records[i].body_position == 2);
       CHECK(d.records[i].samples.size() == 25);
+      CHECK(d.records[i].adc.empty());
     }
     CHECK(d.records[1].samples[0] == 200);
     CHECK(d.records[2].samples[24] == 324);
   }
-  SECTION("chunks after the last time record are extrapolated 1 s apart") {
-    auto d = decode_bioz(concat({c0, t, c1, c2}));
-    REQUIRE(d.records.size() == 3);
-    CHECK(d.records[0].timestamp_ms == 2000000);
-    CHECK(d.records[1].timestamp_ms == 2001000);
-    CHECK(d.records[2].timestamp_ms == 2002000);
-  }
-  SECTION("header start time is the fallback for untimed chunks") {
-    auto d = decode_bioz(concat({h, c0, c1}));
+  SECTION("a time record within 6 s does not move the clock") {
+    auto d = decode_bioz(concat({h, c0, ohr_time(1006), c1}));
     REQUIRE(d.records.size() == 2);
-    CHECK(d.records[0].timestamp_ms == 1001000);
-    CHECK(d.records[1].timestamp_ms == 1002000);
+    CHECK(d.records[1].timestamp_ms == 1001000);
+  }
+  SECTION("a time record beyond 6 s resyncs the clock") {
+    auto d = decode_bioz(concat({h, c0, t, c1, c2}));
+    REQUIRE(d.records.size() == 3);
+    CHECK(d.records[0].timestamp_ms == 1000000);
+    CHECK(d.records[1].timestamp_ms == 2000000);
+    CHECK(d.records[2].timestamp_ms == 2001000);
+  }
+  SECTION("chunks before any time info are stamped back from the first time record") {
+    // FW 8.12 order: a time record follows the chunk it times
+    auto d = decode_bioz(concat({c0, c1, t, c2}));
+    REQUIRE(d.records.size() == 3);
+    CHECK(d.records[0].timestamp_ms == 1999000);
+    CHECK(d.records[1].timestamp_ms == 2000000);
+    CHECK(d.records[2].timestamp_ms == 2001000);
+  }
+  SECTION("a header does not time chunks before it") {
+    auto d = decode_bioz(concat({c0, h, c1}));
+    REQUIRE(d.records.size() == 2);
+    CHECK(d.records[0].timestamp_ms == 0);
+    CHECK(d.records[1].timestamp_ms == 1000000);
+  }
+  SECTION("ADC variant: 6-byte samples, raw u24 then signed ADC i24") {
+    Bytes s;
+    for (size_t i = 0; i < 25; ++i)
+      s.insert(s.end(), {uint8_t(i), 0, 0, 0xFE, 0xFF, 0xFF}); // adc = -2
+    auto d = decode_bioz(concat({h, ohr_chunk(0x3D, 1, 0, s), c1}));
+    REQUIRE(d.records.size() == 2);
+    REQUIRE(d.records[0].samples.size() == 25);
+    REQUIRE(d.records[0].adc.size() == 25);
+    CHECK(d.records[0].samples[24] == 24);
+    CHECK(d.records[0].adc[0] == -2);
+    CHECK(d.records[1].timestamp_ms == 1001000);
+  }
+  SECTION("normalized scaling") {
+    CHECK(bioz_normalized(0) == Approx(0.5));
+    CHECK(bioz_normalized(0x40000) == Approx(0.75));
+    CHECK(bioz_normalized(0x80000) == Approx(0.5));
+    CHECK(bioz_normalized(0xC0000) == Approx(0.25));
   }
   SECTION("no time info gives timestamp 0") {
     auto d = decode_bioz(c0);
@@ -599,7 +630,104 @@ TEST_CASE("decode_acc synthetic", "[files][acc]") {
   CHECK(d.records[0].samples[1] == std::array<int16_t, 3>{-32768, 32767, -1});
 }
 
-TEST_CASE("OHR real recordings", "[files][bioz][acc][data]") {
+TEST_CASE("decode_acc resyncs beyond 1 s", "[files][acc]") {
+  Bytes a = ohr_chunk(0x2B, 0x6E, 0, Bytes(6, 0));
+  // clock at 5002 s when the time record arrives
+  auto near = decode_acc(concat({ohr_header(5000), a, a, ohr_time(5003), a}));
+  REQUIRE(near.records.size() == 3);
+  CHECK(near.records[2].timestamp_ms == 5002000);
+  auto far = decode_acc(concat({ohr_header(5000), a, a, ohr_time(5004), a}));
+  REQUIRE(far.records.size() == 3);
+  CHECK(far.records[2].timestamp_ms == 5004000);
+}
+
+namespace {
+
+// metric, index, gains, then `rate` u16 samples at 128 Hz (format 0x62)
+Bytes ppg2_chunk(uint8_t metric, uint8_t pd, std::array<uint8_t, 4> gain,
+                 const std::vector<uint16_t> &v) {
+  Bytes p{metric};
+  put_u16(p, unsigned(15 + 2 * v.size()));
+  p.insert(p.end(), {7, 4, 1, 0x62, pd, 0, 0, 10, 11, 12, 13});
+  p.insert(p.end(), gain.begin(), gain.end());
+  for (uint16_t x : v)
+    put_u16(p, x);
+  return p;
+}
+
+Bytes body(std::initializer_list<Bytes> metrics) {
+  return ohr(0x0F, concat(metrics));
+}
+
+} // namespace
+
+TEST_CASE("decode_ppg2 synthetic", "[files][ppg2]") {
+  std::vector<uint16_t> flat(128, 20000);
+  SECTION("several channels per record, one clock per (metric, led_pd_pos)") {
+    Bytes rec = body({ppg2_chunk(126, 0x06, {0, 0, 0, 0}, flat),
+                      ppg2_chunk(124, 0xB6, {0, 0, 0, 0}, flat)});
+    auto d = decode_ppg2(concat({ohr_header(100), rec, rec}));
+    REQUIRE(d.records.size() == 4);
+    CHECK(d.records[0].metric_id == 126);
+    CHECK(d.records[1].led_pd_pos == 0xB6);
+    CHECK(d.records[0].timestamp_ms == 100000);
+    CHECK(d.records[1].timestamp_ms == 100000);
+    CHECK(d.records[2].timestamp_ms == 101000);
+    CHECK(d.records[3].timestamp_ms == 101000);
+    CHECK(d.records[0].sample_rate_hz == 128);
+    CHECK(d.records[0].index == 7);
+    CHECK(d.records[0].led == std::array<uint8_t, 4>{10, 11, 12, 13});
+    REQUIRE(d.records[0].samples.size() == 128);
+    CHECK(d.records[0].samples[0] == 20000 - 16384);
+  }
+  SECTION("gain applies per quarter second") {
+    // steps of 2: a step of exactly 1 looks like a rollover and is folded back
+    auto d = decode_ppg2(body({ppg2_chunk(123, 0x16, {0, 2, 4, 6}, flat)}));
+    REQUIRE(d.records.size() == 1);
+    auto &s = d.records[0].samples;
+    CHECK(s[31] == 20000 - 16384);
+    CHECK(s[32] == 20000 + 2 * 32768 - 16384);
+    CHECK(s[64] == 20000 + 4 * 32768 - 16384);
+    CHECK(s[127] == 20000 + 6 * 32768 - 16384);
+  }
+  SECTION("a 32768 jump is undone within a channel") {
+    std::vector<uint16_t> v(128, 20000);
+    v[1] = uint16_t(20000 + 100); // continues normally
+    auto d = decode_ppg2(body({ppg2_chunk(123, 0x16, {0, 1, 1, 1}, v)}));
+    auto &s = d.records[0].samples;
+    CHECK(s[1] == 20100 - 16384);
+    CHECK(s[32] == 20000 - 16384); // gain step of exactly 32768 folded back
+  }
+  SECTION("unknown format or short chunk is skipped") {
+    Bytes bad = ppg2_chunk(123, 0x16, {0, 0, 0, 0}, flat);
+    bad[6] = 0x70; // format byte
+    Bytes ok = ppg2_chunk(126, 0x06, {0, 0, 0, 0}, flat);
+    auto d = decode_ppg2(body({bad, ok}));
+    REQUIRE(d.records.size() == 1);
+    CHECK(d.records[0].metric_id == 126);
+  }
+}
+
+TEST_CASE("decode_ecg synthetic", "[files][ecg]") {
+  Bytes p{0x64};
+  put_u16(p, 11 + 3 * 3);
+  p.insert(p.end(), {5, 4, 1, 0x01, 3});
+  for (int i = 0; i < 4; ++i)
+    p.push_back(uint8_t(1800000000u >> (8 * i)));
+  put_u16(p, 250);
+  p.insert(p.end(), {0x10, 0, 0, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x01});
+  auto d = decode_ecg(concat({ohr_header(100), body({p})}));
+  REQUIRE(d.records.size() == 1);
+  auto &c = d.records[0];
+  CHECK(c.timestamp_ms == 1800000000250ull); // own time, not the header clock
+  CHECK(c.index == 5);
+  CHECK(c.samples == std::vector<uint32_t>{0x10, 0x10, 0x10000}); // > 0x3FFFFF repeats
+  CHECK(ecg_microvolts(0) == 0);
+  CHECK(ecg_microvolts(0x10000) == -33333); // -0x10000 * 1e6 / 0x20000 / 15
+  CHECK(ecg_microvolts(0x30000) == 33332);  // 0x3FFFF - 0x30000 = 0xFFFF
+}
+
+TEST_CASE("OHR real recordings", "[files][bioz][acc][ppg2][data]") {
   constexpr uint64_t Y2026 = 1767225600000ull, Y2027 = 1798761600000ull;
   SECTION("bioz") {
     Bytes data = load("bioz.bin");
@@ -635,4 +763,79 @@ TEST_CASE("OHR real recordings", "[files][bioz][acc][data]") {
       for (auto &s : d.records[i].samples)
         CHECK(std::abs(s[2]) > 400);
   }
+  SECTION("ppg2") {
+    Bytes data = load("ppg2.bin");
+    REQUIRE(!data.empty());
+    auto d = decode_ppg2(data);
+    CHECK(d.consumed_bytes == data.size());
+    REQUIRE(d.records.size() > 0);
+    std::map<std::pair<int, int>, uint64_t> prev;
+    for (auto &c : d.records) {
+      CHECK(c.sample_rate_hz == 128);
+      CHECK(c.samples.size() == 128);
+      CHECK(c.timestamp_ms >= Y2026);
+      CHECK(c.timestamp_ms < Y2027);
+      auto &p = prev[{c.metric_id, c.led_pd_pos}];
+      CHECK(c.timestamp_ms > p); // each channel strictly increasing
+      p = c.timestamp_ms;
+    }
+    CHECK(prev.size() == 3);
+  }
 }
+
+// Monitor-style decoding: the file grows by `step` bytes per poll, each poll
+// decodes what is on the device with a state and erases what was consumed
+template <class Decode>
+static auto decode_live(const Bytes &data, size_t step, Decode decode) {
+  OhrState st;
+  decltype(decode(std::span<const uint8_t>(data), &st).records) all;
+  size_t erased = 0;
+  for (size_t end = 0; end < data.size() + step; end += step) {
+    end = std::min(end, data.size());
+    auto d = decode(std::span(data).subspan(erased, end - erased), &st);
+    all.insert(all.end(), d.records.begin(), d.records.end());
+    erased += d.consumed_bytes;
+    if (end == data.size())
+      break;
+  }
+  return all;
+}
+
+// Bytes from the first data record on: what a download after an erase sees
+static Bytes from_record(const Bytes &data, size_t skip) {
+  size_t pos = 0;
+  for (size_t k = 0; k < skip; ++k)
+    pos += 5 + (data[pos + 3] | (data[pos + 4] << 8));
+  return Bytes(data.begin() + long(pos), data.end());
+}
+
+TEST_CASE("OHR slice-by-slice decoding matches whole-file decoding",
+          "[files][ppg2][bioz][data]") {
+  auto same = [](const auto &live, const auto &whole) {
+    REQUIRE(live.size() <= whole.size()); // trailing untimed chunks held back
+    REQUIRE(live.size() + 10 > whole.size());
+    for (size_t i = 0; i < live.size(); ++i) {
+      CHECK(live[i].timestamp_ms == whole[i].timestamp_ms);
+      CHECK(live[i].samples == whole[i].samples);
+    }
+  };
+  SECTION("ppg2 with header") {
+    Bytes data = load("ppg2.bin");
+    same(decode_live(data, 700, decode_ppg2), decode_ppg2(data).records);
+  }
+  SECTION("ppg2 after an erase: no header, untimed start") {
+    Bytes data = from_record(load("ppg2.bin"), 4); // 0A 0B 0C and the first time
+    auto whole = decode_ppg2(data).records;
+    REQUIRE(whole.front().timestamp_ms > 0); // stamped back from a later time
+    auto live = decode_live(data, 700, decode_ppg2);
+    REQUIRE(!live.empty());
+    for (auto &c : live)
+      CHECK(c.timestamp_ms > 0);
+    same(live, whole);
+  }
+  SECTION("bioz after an erase") {
+    Bytes data = from_record(load("bioz.bin"), 3);
+    same(decode_live(data, 100, decode_bioz), decode_bioz(data).records);
+  }
+}
+

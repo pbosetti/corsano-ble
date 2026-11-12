@@ -16,6 +16,7 @@
 namespace Corsano {
 
 using Clock = std::chrono::steady_clock;
+constexpr uint32_t MaxDownloadBytes = 64 * 1024; // per file and pass, ~2 s
 
 static double unix_now() {
   return std::chrono::duration<double>(
@@ -55,6 +56,7 @@ struct Monitor::Impl {
   uint64_t dropped = 0, reported = 0;
   std::string error;
   std::map<FileId, double> newest; // --keep style dedupe (worker only)
+  std::map<FileId, OhrState> ohr_state; // erase mode: clocks across passes
 
   uint32_t next_record() { return records.fetch_add(1); }
 
@@ -109,15 +111,23 @@ struct Monitor::Impl {
   bool connect() {
     std::string address;
     try {
-      for (auto &d : Bracelet::scan(std::chrono::seconds(5)))
-        if (iequals(d.address, device) || d.name == device) {
-          address = d.address;
-          break;
-        }
+      // Stops early on a match or on stop(), so Ctrl-C is not held up
+      auto end = Clock::now() + std::chrono::seconds(5);
+      std::atomic<bool> found{false};
+      Bracelet::scan(
+          [&](const DeviceInfo &d) { // BLE thread; none after scan returns
+            if (!found && (iequals(d.address, device) || d.name == device)) {
+              address = d.address;
+              found = true;
+            }
+          },
+          [&] { return stop_flag || found || Clock::now() >= end; });
     } catch (const std::exception &e) {
       set_error(e.what());
       return false;
     }
+    if (stop_flag)
+      return false;
     if (address.empty()) {
       set_error("not found: " + device);
       return false;
@@ -188,6 +198,17 @@ struct Monitor::Impl {
       return !keep || t > after;
     };
     size_t consumed = data.size();
+    // Erasing: each download continues the last one, so OHR clocks carry over
+    OhrState *st = keep ? nullptr : &ohr_state[f];
+    auto ohr = [&](auto decode_fn) {
+      auto d = decode_fn(std::span<const uint8_t>(data), st);
+      // shortcut: a full slice with no time record at all would be held back
+      // forever; take it untimed (timestamp 0) instead. Only at very high
+      // PPG2 rates; raise MaxDownloadBytes if it shows up.
+      if (st && d.consumed_bytes == 0 && data.size() >= MaxDownloadBytes)
+        d = decode_fn(std::span<const uint8_t>(data), nullptr);
+      return d;
+    };
     switch (f) {
     case FileId::Activity: {
       auto d = decode_activity(data);
@@ -259,7 +280,7 @@ struct Monitor::Impl {
       break;
     }
     case FileId::Bioz: {
-      auto d = decode_bioz(data);
+      auto d = ohr(decode_bioz);
       consumed = d.consumed_bytes;
       for (auto &c : d.records) {
         if (keep && c.timestamp_ms / 1000.0 <= after)
@@ -273,7 +294,7 @@ struct Monitor::Impl {
       break;
     }
     case FileId::Acc: {
-      auto d = decode_acc(data);
+      auto d = ohr(decode_acc);
       consumed = d.consumed_bytes;
       for (auto &c : d.records) {
         if (keep && c.timestamp_ms / 1000.0 <= after)
@@ -285,6 +306,37 @@ struct Monitor::Impl {
           add(t, "acc.x", c.samples[i][0], id);
           add(t, "acc.y", c.samples[i][1], id);
           add(t, "acc.z", c.samples[i][2], id);
+        }
+      }
+      break;
+    }
+    case FileId::Ppg2: {
+      auto d = ohr(decode_ppg2);
+      consumed = d.consumed_bytes;
+      for (auto &c : d.records) {
+        if (keep && c.timestamp_ms / 1000.0 <= after)
+          continue;
+        double channel = c.metric_id * 256 + c.led_pd_pos;
+        for (size_t i = 0; i < c.samples.size(); ++i) {
+          double t = c.timestamp_ms / 1000.0 + double(i) / c.sample_rate_hz;
+          top = std::max(top, t);
+          uint32_t id = next_record();
+          add(t, "ppg2.channel", channel, id);
+          add(t, "ppg2.value", c.samples[i], id);
+        }
+      }
+      break;
+    }
+    case FileId::Ecg: {
+      auto d = ohr(decode_ecg);
+      consumed = d.consumed_bytes;
+      for (auto &c : d.records) {
+        if (keep && c.timestamp_ms / 1000.0 <= after)
+          continue;
+        for (size_t i = 0; i < c.samples.size(); ++i) {
+          double t = c.timestamp_ms / 1000.0 + i / EcgSampleRateHz;
+          top = std::max(top, t);
+          add(t, "ecg.uv", ecg_microvolts(c.samples[i]), next_record());
         }
       }
       break;
@@ -304,10 +356,17 @@ struct Monitor::Impl {
     for (FileId f : config.files) {
       if (stop_flag || disconnected)
         break;
+      // Undo the decoder state if the slice is not erased after all
+      OhrState saved = ohr_state[f];
       try {
         uint32_t n = bracelet->file_size(f);
         if (n == 0)
           continue;
+        // A big backlog (BioZ reaches MBs at ~40 KB/s) would hold up every
+        // other file for minutes; erasing lets the next pass go on from here.
+        // Without erase the bracelet only serves the start, so take it whole.
+        if (config.erase)
+          n = std::min(n, MaxDownloadBytes);
         auto data = bracelet->download_file(f, n);
         downloaded = true;
         if (config.raw_sink)
@@ -318,13 +377,16 @@ struct Monitor::Impl {
         // Never erase undecoded data unless a sink has kept it
         bool decoded = f == FileId::Activity || f == FileId::Stress ||
                        f == FileId::Ppg || f == FileId::Bioz ||
-                       f == FileId::Acc;
+                       f == FileId::Acc || f == FileId::Ppg2 ||
+                       f == FileId::Ecg;
         if (!decoded && !config.raw_sink)
           consumed = 0;
         if (config.erase && consumed > 0)
           bracelet->erase_file(f, uint32_t(consumed));
       } catch (const std::exception &e) {
-        set_error(e.what());
+        ohr_state[f] = saved;
+        if (!stop_flag) // stop() cancels the download on purpose
+          set_error(e.what());
       }
     }
     push_status();
@@ -401,6 +463,11 @@ void Monitor::stop() {
   {
     std::lock_guard lock(_impl->mutex);
     _impl->stop_flag = true;
+  }
+  {
+    std::lock_guard lock(_impl->bracelet_mutex); // a big file can take minutes
+    if (_impl->bracelet)
+      _impl->bracelet->cancel_download();
   }
   _impl->cv.notify_all();
   if (_impl->worker.joinable())

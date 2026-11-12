@@ -4,6 +4,8 @@
 #include "corsano/protocol.hpp" // check_crc
 
 #include <algorithm>
+#include <map>
+#include <optional>
 
 namespace Corsano {
 
@@ -45,26 +47,66 @@ Decoded<Record> split_crc8_records(std::span<const uint8_t> data,
 }
 
 // "OHR" records: [OHR][len:u16][id:u8][payload len-1], no CRC. Body records
-// (id 0x0F) carry one channel chunk; channel 0x1E sets the epoch time that the
-// following chunks of the requested channels count up from (1 s each).
-// parse(timestamp_ms, p, n) gets p -> [index][quality][body_position][format]
-// [samples...] with n = sample bytes / sample_size. Stops before an incomplete
-// record so consumed_bytes stays safe to erase.
+// (id 0x0F) hold metric chunks [metric:u8][clen:u16][clen bytes]. parse(metric,
+// p, clen) gets p -> [index][quality]... and returns the chunk plus its clock
+// slot, or nothing to skip it. Stops before an incomplete record so
+// consumed_bytes stays safe to erase.
+//
+// Timing as in Corsano's reference parser: one clock per slot key, advanced by
+// each chunk's duration; the header (0x0A) and the time metric (0x1E) resync a
+// clock only when it is off by more than a tolerance, so jittery time records
+// do not produce uneven or duplicate timestamps. Extension: chunks seen before
+// any time info wait in `pending` and are stamped back from the first 0x1E
+// (on FW 8.12 a 0x1E follows the chunk it times; a download after an erase
+// starts with untimed chunks).
+struct OhrSlot {
+  static constexpr uint32_t NoClock = ~0u; // chunk carries its own time
+  uint32_t key;
+  uint64_t duration_ms;
+};
+
 template <class Chunk, class Parse>
 Decoded<Chunk> split_ohr_chunks(std::span<const uint8_t> data,
-                                std::span<const uint8_t> channel_ids,
-                                size_t sample_size, Parse parse) {
-  constexpr uint8_t TimeChannel = 0x1E;
+                                uint64_t time_tolerance_ms, OhrState *state,
+                                Parse parse) {
+  constexpr uint8_t TimeMetric = 0x1E;
+  constexpr uint64_t HeaderToleranceMs = 6000;
+  struct Clock {
+    uint64_t next_ms = 0; // 0: not running yet
+    std::vector<std::pair<size_t, uint64_t>> pending; // record, duration
+  };
   Decoded<Chunk> out;
-  // A 0x1E record carries the time of the data chunk(s) just BEFORE it (seen
-  // on FW 8.12: chunk, time, chunk, time...). Chunks wait in `pending` until
-  // timed; earlier ones in a group are 1 s apart.
-  uint64_t last_s = 0;
-  size_t pending = 0;
-  auto stamp_back = [&](uint64_t t) {
-    for (size_t k = 0; k < pending; ++k)
-      out.records[out.records.size() - 1 - k].timestamp_ms = (t - k) * 1000;
-    pending = 0;
+  std::map<uint32_t, Clock> clocks;
+  uint64_t sync_ms = 0; // last header/time value, starts new clocks
+  if (state) {
+    for (auto [key, next] : state->clocks)
+      clocks[key].next_ms = next;
+    sync_ms = state->sync_ms;
+  }
+  // First record holding a still-untimed chunk: where a state'd call stops
+  std::optional<std::pair<size_t, size_t>> hold; // byte pos, records before
+  auto sync = [&](uint64_t t_ms, uint64_t tol_ms, bool time_record) {
+    sync_ms = t_ms;
+    hold.reset();
+    for (auto &[key, c] : clocks) {
+      if (c.next_ms == 0) {
+        if (!time_record || c.pending.empty()) {
+          c.pending.clear(); // a header starts a new session: earlier chunks stay 0
+          c.next_ms = t_ms;
+          continue;
+        }
+        uint64_t ts = t_ms; // the last pending chunk is the one being timed
+        for (size_t k = c.pending.size(); k-- > 0;) {
+          out.records[c.pending[k].first].timestamp_ms = ts;
+          if (k > 0)
+            ts -= std::min(ts, c.pending[k - 1].second);
+        }
+        c.next_ms = t_ms + c.pending.back().second;
+        c.pending.clear();
+      } else if (c.next_ms > t_ms + tol_ms || c.next_ms + tol_ms < t_ms) {
+        c.next_ms = t_ms;
+      }
+    }
   };
   size_t pos = 0;
   while (data.size() - pos >= 5) {
@@ -78,28 +120,57 @@ Decoded<Chunk> split_ohr_chunks(std::span<const uint8_t> data,
       break;
     const uint8_t *p = r + 6; // payload, len - 1 bytes
     size_t plen = len - 1;
+    size_t records_before = out.records.size();
     if (r[5] == 0x0A && plen >= 16) {
-      last_s = rd32(p + 12); // file start time: fallback for untimed tails
-    } else if (r[5] == 0x0F && plen >= 3 && 3 + size_t(rd16(p + 1)) <= plen) {
-      size_t clen = rd16(p + 1);
-      if (p[0] == TimeChannel && clen >= 6) {
-        last_s = rd32(p + 5);
-        stamp_back(last_s);
-      } else if (std::find(channel_ids.begin(), channel_ids.end(), p[0]) !=
-                     channel_ids.end() &&
-                 clen >= 4) {
-        out.records.push_back(parse(0, p + 3, (clen - 4) / sample_size));
-        ++pending;
+      sync(uint64_t(rd32(p + 12)) * 1000, HeaderToleranceMs, false);
+    } else if (r[5] == 0x0F) {
+      for (size_t j = 0; j + 3 <= plen;) {
+        uint8_t metric = p[j];
+        size_t clen = rd16(p + j + 1);
+        if (j + 3 + clen > plen)
+          break; // overruns its record: drop the rest of the record
+        const uint8_t *c = p + j + 3;
+        j += 3 + clen;
+        if (metric == TimeMetric) {
+          if (clen >= 6)
+            sync(uint64_t(rd32(c + 2)) * 1000, time_tolerance_ms, true);
+          continue;
+        }
+        auto parsed = parse(metric, c, clen);
+        if (!parsed)
+          continue;
+        auto &[chunk, slot] = *parsed;
+        if (slot.key != OhrSlot::NoClock) {
+          auto [it, fresh] = clocks.try_emplace(slot.key);
+          Clock &clk = it->second;
+          if (fresh)
+            clk.next_ms = sync_ms;
+          chunk.timestamp_ms = clk.next_ms;
+          if (clk.next_ms)
+            clk.next_ms += slot.duration_ms;
+          else {
+            clk.pending.push_back({out.records.size(), slot.duration_ms});
+            if (!hold)
+              hold = {{pos, records_before}};
+          }
+        }
+        out.records.push_back(std::move(chunk));
       }
     }
     pos += 5 + len;
   }
-  // Trailing chunks with no time record yet: extrapolate 1 s apart
-  if (last_s)
-    for (size_t k = 0; k < pending; ++k)
-      out.records[out.records.size() - pending + k].timestamp_ms =
-          (last_s + 1 + k) * 1000;
   out.consumed_bytes = pos;
+  if (state) {
+    if (hold) { // untimed: leave them for a slice that brings the time
+      out.records.resize(hold->second);
+      out.consumed_bytes = hold->first;
+    }
+    state->clocks.clear();
+    for (auto &[key, c] : clocks)
+      if (c.next_ms)
+        state->clocks[key] = c.next_ms;
+    state->sync_ms = sync_ms;
+  }
   return out;
 }
 
@@ -240,31 +311,96 @@ PpgChunk parse_ppg(std::span<const uint8_t> c) {
   return r;
 }
 
-// MARK: - OHR (BioZ, Acc)
+// MARK: - OHR (BioZ, Acc, PPG2, ECG)
 
-constexpr uint8_t BiozChannels[] = {0x3D, 0x3E}; // Corsano docs say 0x3E
-constexpr uint8_t AccChannels[] = {0x2B};
+template <class Chunk> using OhrParsed = std::optional<std::pair<Chunk, OhrSlot>>;
 
-BiozChunk parse_bioz(uint64_t ts, const uint8_t *p, size_t n) {
-  BiozChunk r{ts, p[0], p[1], p[2], {}};
-  r.samples.reserve(n);
-  for (size_t i = 0; i < n; ++i) {
-    const uint8_t *s = p + 4 + 3 * i;
-    r.samples.push_back(uint32_t(s[0]) | (uint32_t(s[1]) << 8) |
-                        (uint32_t(s[2]) << 16));
-  }
-  return r;
+uint32_t rd24(const uint8_t *p) {
+  return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16);
 }
 
-AccChunk parse_acc(uint64_t ts, const uint8_t *p, size_t n) {
-  AccChunk r{ts, p[0], p[1], p[2], {}};
+int32_t rd24s(const uint8_t *p) {
+  uint32_t v = rd24(p);
+  return int32_t(v & 0x800000 ? v | 0xFF000000u : v);
+}
+
+// [index][quality][body_position][format][samples]
+OhrParsed<BiozChunk> parse_bioz(uint8_t metric, const uint8_t *p, size_t clen) {
+  constexpr size_t AdcVariantSize = 154; // 25 samples x 6 bytes + 4
+  if ((metric != 0x3D && metric != 0x3E) || clen < 4) // Corsano docs say 0x3E
+    return {};
+  bool adc = clen >= AdcVariantSize;
+  size_t n = (clen - 4) / (adc ? 6 : 3);
+  BiozChunk r{0, p[0], p[1], p[2], {}, {}};
+  r.samples.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    const uint8_t *s = p + 4 + (adc ? 6 : 3) * i;
+    r.samples.push_back(rd24(s));
+    if (adc)
+      r.adc.push_back(rd24s(s + 3));
+  }
+  return {{std::move(r), {0, uint64_t(n * 1000 / BiozSampleRateHz)}}};
+}
+
+OhrParsed<AccChunk> parse_acc(uint8_t metric, const uint8_t *p, size_t clen) {
+  if (metric != 0x2B || clen < 4)
+    return {};
+  size_t n = (clen - 4) / 6;
+  AccChunk r{0, p[0], p[1], p[2], {}};
   r.samples.reserve(n);
   for (size_t i = 0; i < n; ++i) {
     const uint8_t *s = p + 4 + 6 * i;
     r.samples.push_back(
         {int16_t(rd16(s)), int16_t(rd16(s + 2)), int16_t(rd16(s + 4))});
   }
-  return r;
+  return {{std::move(r), {0, 1000}}};
+}
+
+// [index][quality][body_position][format][led_pd_pos][offset][exp][led x4]
+// [gain x4][samples u16 x rate]; rate from the format code
+OhrParsed<Ppg2Chunk> parse_ppg2(uint8_t metric, const uint8_t *p, size_t clen,
+                                std::map<uint32_t, int32_t> &last) {
+  constexpr size_t Header = 15;
+  if (metric < 121 || metric > 127 || clen < Header || p[3] < 0x60 ||
+      p[3] > 0x64)
+    return {};
+  uint16_t rate = uint16_t(32u << (p[3] - 0x60));
+  if (Header + 2 * size_t(rate) > clen)
+    return {};
+  Ppg2Chunk r{0, metric, p[0], p[1], p[2], p[4], p[5], p[6], {}, {}, rate, {}};
+  std::copy(p + 7, p + 11, r.led.begin());
+  std::copy(p + 11, p + 15, r.gain.begin());
+  uint32_t key = (uint32_t(metric) << 8) | r.led_pd_pos;
+  int32_t &lv = last[key];
+  r.samples.reserve(rate);
+  for (size_t i = 0; i < rate; ++i) {
+    int32_t v = int32_t(rd16(p + Header + 2 * i)) +
+                int32_t(r.gain[i * 4 / rate]) * 32768 - 16384;
+    if (lv > 0 && v > lv + 31768 && v < lv + 33768)
+      v -= 32768;
+    else if (lv > 0 && v < lv - 31768 && v > lv - 33768)
+      v += 32768;
+    lv = v;
+    r.samples.push_back(v);
+  }
+  return {{std::move(r), {key, 1000}}};
+}
+
+// [index][quality][body_position][format][count:u8][time:u32 s][ms:u16]
+// [samples u24 x count]
+OhrParsed<EcgChunk> parse_ecg(uint8_t metric, const uint8_t *p, size_t clen) {
+  constexpr size_t Header = 11;
+  if (metric != 0x64 || clen < Header || Header + 3 * size_t(p[4]) > clen)
+    return {};
+  EcgChunk r{uint64_t(rd32(p + 5)) * 1000 + rd16(p + 9), p[0], p[1], p[2], {}};
+  uint32_t prev = 0;
+  for (size_t i = 0; i < p[4]; ++i) {
+    uint32_t v = rd24(p + Header + 3 * i);
+    if (v > 0x3FFFFF)
+      v = prev;
+    r.samples.push_back(prev = v);
+  }
+  return {{std::move(r), {OhrSlot::NoClock, 0}}};
 }
 
 } // namespace
@@ -289,16 +425,34 @@ Decoded<PpgChunk> decode_ppg(std::span<const uint8_t> data) {
                                        parse_ppg);
 }
 
-// MARK: - BioZ
+// MARK: - OHR
 
-Decoded<BiozChunk> decode_bioz(std::span<const uint8_t> data) {
-  return split_ohr_chunks<BiozChunk>(data, BiozChannels, 3, parse_bioz);
+Decoded<BiozChunk> decode_bioz(std::span<const uint8_t> data,
+                               OhrState *state) {
+  return split_ohr_chunks<BiozChunk>(data, 6000, state, parse_bioz);
 }
 
-// MARK: - Acc
+Decoded<AccChunk> decode_acc(std::span<const uint8_t> data, OhrState *state) {
+  return split_ohr_chunks<AccChunk>(data, 1000, state, parse_acc);
+}
 
-Decoded<AccChunk> decode_acc(std::span<const uint8_t> data) {
-  return split_ohr_chunks<AccChunk>(data, AccChannels, 6, parse_acc);
+Decoded<Ppg2Chunk> decode_ppg2(std::span<const uint8_t> data,
+                               OhrState *state) {
+  std::map<uint32_t, int32_t> local; // rollover state per channel
+  auto &last = state ? state->ppg2_last : local;
+  auto before = last;
+  auto d = split_ohr_chunks<Ppg2Chunk>(
+      data, 6000, state, [&](uint8_t m, const uint8_t *p, size_t n) {
+        return parse_ppg2(m, p, n, last);
+      });
+  // Still no time at all: every chunk was held back, so is its rollover state
+  if (state && state->sync_ms == 0)
+    last = before;
+  return d;
+}
+
+Decoded<EcgChunk> decode_ecg(std::span<const uint8_t> data, OhrState *state) {
+  return split_ohr_chunks<EcgChunk>(data, 6000, state, parse_ecg);
 }
 
 } // namespace Corsano

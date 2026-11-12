@@ -41,9 +41,20 @@ realtime setting as it was.
 `history` downloads a file stored on the bracelet. `--file` is one of
 `activity` (default), `ppg`, `hrv`, `workout`, `sleep`, `logs`, `ppg2`, `ecg`,
 `bioz`, `greenteg`, `stress`, `acc`. `--raw PATH` also saves the downloaded
-bytes verbatim. Only `activity`, `ppg` and `stress` have a decoder and print CSV
-(`ppg`: `t_ms,chunk,ppg,acc,acc_x,acc_y,acc_z,hr,hr_q`, one row per 25 Hz
-sample; `stress`: `time,cognitive_zone,cognitive_zone_q,predicted_zone,predicted_transition,zone_hour,cortisol,sc_stress,sc_stress_q`, raw units); the other files need `--raw PATH`, print nothing on stdout, and refuse
+bytes verbatim. These files have a decoder and print CSV (raw units unless
+noted):
+
+| File | Columns |
+|---|---|
+| `activity` | `time,hr,hr_q,spo2,spo2_q,resp,resp_q,steps,temp1,temp2,battery,charging,wearing` |
+| `ppg` | `t_ms,chunk,ppg,acc,acc_x,acc_y,acc_z,hr,hr_q`, one row per 25 Hz sample |
+| `stress` | `time,cognitive_zone,cognitive_zone_q,predicted_zone,predicted_transition,zone_hour,cortisol,sc_stress,sc_stress_q` |
+| `bioz` | `t_ms,chunk,raw,normalized,adc`; `normalized` is Corsano's 0..1 scaling, `adc` is `NA` unless the bracelet records the ADC variant |
+| `acc` | `t_ms,chunk,x,y,z` at 32 Hz, about 512 counts/g |
+| `ppg2` | `t_ms,chunk,metric,led_pd_pos,quality,led,gain,value`; a channel is (`metric`, `led_pd_pos`), `value` is the 19-bit reconstruction |
+| `ecg` | `t_ms,chunk,raw,uv` at 256 Hz; `uv` is Corsano's microvolt conversion |
+
+The other files need `--raw PATH`, print nothing on stdout, and refuse
 `--erase` since their format is not understood yet. For decoded files
 `--erase` removes only the bytes that were decoded.
 
@@ -97,6 +108,9 @@ Fields (time of `hrm.*` is the host clock; the others use the record time):
   `predicted_transition`, `zone_hour`, `cortisol`, `sc_stress`, `sc_stress_q`
 * `bioz.z`: bioimpedance samples
 * `acc.x`, `acc.y`, `acc.z`: accelerometer samples
+* `ppg2.channel`, `ppg2.value`: one pair per PPG2 sample; channel is
+  `metric * 256 + led_pd_pos`
+* `ecg.uv`: ECG samples in microvolts
 * `ppg.`: `ppg`, `acc` (+ `acc_x`, `acc_y`, `acc_z` for protocol v3) per 25 Hz
   sample; `hr`, `hr_q` once per 25 samples
 * `status.connected` (0/1 on every change), `status.dropped` (samples lost to a
@@ -213,6 +227,7 @@ readable forms (validated before connecting):
 | `set-bedtime:21:30`, `set-risetime:06:30` | **local** time, sent as GMT using this host's UTC offset now |
 | `set-recording:stress-bioz,continuous` | `stress-bioz`, `acc` or `temperature-raw`; `off`, `bedtime-risetime` or `continuous` |
 | `get-recording:stress-bioz` | `stress-bioz`, `acc` or `temperature-raw` |
+| `start-measurement:ecg`, `stop-measurement:ecg` | ECG (`02`); other measurement ids in hex |
 | `set-realtime:on` | `on` or `off` |
 | `get-file-size:activity` | file by `history --file` name |
 
